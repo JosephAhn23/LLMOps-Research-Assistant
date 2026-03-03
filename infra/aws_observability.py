@@ -196,6 +196,10 @@ class CloudWatchObservability:
         self._sequence_tokens: Dict[str, str] = {}
         self._metric_buffer: List[Dict] = []
         self._buffer_lock = threading.Lock()
+        # Separate lock for CloudWatch Logs sequence tokens — the read-modify-
+        # write on _sequence_tokens must be atomic across concurrent Celery
+        # worker threads to avoid InvalidSequenceTokenException.
+        self._log_lock = threading.Lock()
         self._ensure_log_group()
 
     def _ensure_log_group(self):
@@ -407,22 +411,27 @@ class CloudWatchObservability:
         )
 
     def log_structured(self, log_stream: str, event: Dict[str, Any]):
-        """Structured JSON logging to CloudWatch Logs."""
+        """Structured JSON logging to CloudWatch Logs.
+
+        Thread-safe: the sequence-token read-modify-write is protected by
+        _log_lock so concurrent Celery workers don't race on the same stream.
+        """
         try:
             self.logs.create_log_stream(logGroupName=LOG_GROUP, logStreamName=log_stream)
         except self.logs.exceptions.ResourceAlreadyExistsException:
             pass
 
-        kwargs = {
-            "logGroupName": LOG_GROUP,
-            "logStreamName": log_stream,
-            "logEvents": [{
-                "timestamp": int(time.time() * 1000),
-                "message": json.dumps({**event, "timestamp": datetime.utcnow().isoformat()}),
-            }],
-        }
-        if log_stream in self._sequence_tokens:
-            kwargs["sequenceToken"] = self._sequence_tokens[log_stream]
+        with self._log_lock:
+            kwargs: Dict[str, Any] = {
+                "logGroupName": LOG_GROUP,
+                "logStreamName": log_stream,
+                "logEvents": [{
+                    "timestamp": int(time.time() * 1000),
+                    "message": json.dumps({**event, "timestamp": datetime.utcnow().isoformat()}),
+                }],
+            }
+            if log_stream in self._sequence_tokens:
+                kwargs["sequenceToken"] = self._sequence_tokens[log_stream]
 
-        response = self.logs.put_log_events(**kwargs)
-        self._sequence_tokens[log_stream] = response.get("nextSequenceToken", "")
+            response = self.logs.put_log_events(**kwargs)
+            self._sequence_tokens[log_stream] = response.get("nextSequenceToken", "")

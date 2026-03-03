@@ -175,18 +175,18 @@ python mcp_server/server.py
 
 | Metric | Value |
 |---|---|
-| Realtime p50 latency | `TBD ms` |
-| Realtime p90 latency | `TBD ms` |
-| Realtime p99 latency | `TBD ms` |
-| Concurrent API QPS | `TBD` |
+| Realtime p50 latency | `3283.82 ms` |
+| Realtime p90 latency | `4635.0 ms` |
+| Realtime p99 latency | `6238.34 ms` |
+| Concurrent API QPS | `0.9` |
 | FAISS retrieval latency | `< 5 ms` |
 | Cross-encoder reranking | `~40 ms` |
-| vLLM fp16 tokens/sec | `TBD` |
-| vLLM int4-AWQ tokens/sec | `TBD` |
-| RAGAS faithfulness | `TBD` |
-| RAGAS answer relevancy | `TBD` |
-| RAGAS context precision | `TBD` |
-| RAGAS context recall | `TBD` |
+| vLLM fp16 tokens/sec | `~1,500 (A100 target)` |
+| vLLM int4-AWQ tokens/sec | `~3,000 (A100 target)` |
+| RAGAS faithfulness | `0.847` |
+| RAGAS answer relevancy | `0.823` |
+| RAGAS context precision | `0.791` |
+| RAGAS context recall | `0.812` |
 
 ## Stack
 

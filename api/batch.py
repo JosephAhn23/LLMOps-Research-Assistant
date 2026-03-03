@@ -157,10 +157,11 @@ def process_query_task(self, job_id: str, query: str) -> Dict:
             )
         )
 
+        task_id = self.request.id or str(uuid.uuid4())
         redis_client.hset(
             f"job:{job_id}",
             mapping={
-                query: json.dumps(result.get("response", {})),
+                f"result:{task_id}": json.dumps(result.get("response", {})),
                 "_status": "completed",
                 "_latency_ms": str(round(latency, 2)),
             },
@@ -209,8 +210,62 @@ def process_query_task(self, job_id: str, query: str) -> Dict:
     time_limit=30,
 )
 def process_query_priority_task(self, job_id: str, query: str) -> Dict:
-    """High priority queue - SLA-bound queries."""
-    return process_query_task(self, job_id, query)
+    """High priority queue - SLA-bound queries.
+
+    Delegates to the same pipeline logic as the default task but runs in the
+    high_priority queue with a tighter SLA (15 s soft / 30 s hard limit).
+    We call run_pipeline directly rather than invoking process_query_task as a
+    plain function, which would bypass Celery's retry/context machinery.
+    """
+    start = time.time()
+    try:
+        result = run_pipeline(query)
+
+        latency = (time.time() - start) * 1000
+        from infra.aws_observability import InferenceMetrics
+        _get_cw().emit_inference_metrics(
+            InferenceMetrics(
+                latency_ms=latency,
+                tokens_generated=result.get("response", {}).get("tokens_used", 0),
+                tokens_prompt=result.get("response", {}).get("prompt_tokens", 0),
+                retrieval_latency_ms=0,
+                rerank_latency_ms=0,
+                n_chunks_retrieved=len(result.get("reranked_chunks", [])),
+                cache_hit=False,
+                model_backend="gpt-4o-mini",
+                error=bool(result.get("error")),
+            )
+        )
+
+        task_id = self.request.id or str(uuid.uuid4())
+        redis_client.hset(
+            f"job:{job_id}",
+            mapping={
+                f"result:{task_id}": json.dumps(result.get("response", {})),
+                "_status": "completed",
+                "_latency_ms": str(round(latency, 2)),
+            },
+        )
+        redis_client.expire(f"job:{job_id}", 3600)
+        return result
+
+    except SoftTimeLimitExceeded:
+        logger.warning("Soft timeout hit for priority job %s", job_id)
+        raise self.retry(countdown=2, max_retries=2)
+
+    except Exception as exc:
+        retry_count = self.request.retries
+        backoff = 2 ** retry_count
+
+        if retry_count >= self.max_retries:
+            dead_letter_task.apply_async(
+                args=[job_id, query, str(exc), self.request.id],
+                queue="dead_letter",
+            )
+            redis_client.hset(f"job:{job_id}", "_status", "failed")
+            raise MaxRetriesExceededError(f"Priority task {job_id} permanently failed")
+
+        raise self.retry(exc=exc, countdown=backoff)
 
 
 # ─── Job Management ───────────────────────────────────────────
@@ -251,7 +306,7 @@ def get_job_status(job_id: str) -> Dict:
         for k, v in data.items()
     }
 
-    completed = sum(1 for k in decoded if not k.startswith("_"))
+    completed = sum(1 for k in decoded if k.startswith("result:"))
     total = int(decoded.get("_total", 0))
 
     return {

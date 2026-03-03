@@ -40,7 +40,8 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 
 def _offline_call(query: str) -> None:
-    import agents.orchestrator as orchestrator
+    """Run the full pipeline with lightweight in-process fakes (no model loading)."""
+    from agents.orchestrator import Pipeline
 
     class _FakeRetriever:
         def retrieve(self, q: str) -> list[dict]:
@@ -55,11 +56,9 @@ def _offline_call(query: str) -> None:
 
     class _FakeReranker:
         def rerank(self, _q: str, candidates: list[dict]) -> list[dict]:
-            reranked = []
-            for c in candidates:
-                enriched = dict(c)
-                enriched["rerank_score"] = enriched.get("retrieval_score", 0.0)
-                reranked.append(enriched)
+            reranked = [dict(c) for c in candidates]
+            for c in reranked:
+                c["rerank_score"] = c.get("retrieval_score", 0.0)
             reranked.sort(key=lambda x: x["rerank_score"], reverse=True)
             return reranked[:5]
 
@@ -73,11 +72,12 @@ def _offline_call(query: str) -> None:
                 "completion_tokens": 32,
             }
 
-    orchestrator.retriever = _FakeRetriever()
-    orchestrator.reranker = _FakeReranker()
-    orchestrator.synthesizer = _FakeSynthesizer()
-
-    result = orchestrator.run_pipeline(query)
+    pipeline = Pipeline(
+        retriever=_FakeRetriever(),
+        reranker=_FakeReranker(),
+        synthesizer=_FakeSynthesizer(),
+    )
+    result = pipeline.run(query)
     if result.get("error"):
         raise RuntimeError(result["error"])
 

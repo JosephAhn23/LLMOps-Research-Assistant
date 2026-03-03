@@ -148,8 +148,7 @@ class RerankerAgent:
         documents = [c["text"] for c in candidates]
         scores = self.cross_encoder.score_pairs(query, documents)
 
-        for i, candidate in enumerate(candidates):
-            candidate["rerank_score"] = scores[i]
-
-        reranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
-        return reranked[: self.top_k]
+        # Shallow-copy each dict so the caller's list is not mutated in-place.
+        scored = [{**c, "rerank_score": scores[i]} for i, c in enumerate(candidates)]
+        scored.sort(key=lambda x: x["rerank_score"], reverse=True)
+        return scored[: self.top_k]

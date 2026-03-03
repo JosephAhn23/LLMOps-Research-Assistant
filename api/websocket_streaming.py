@@ -11,11 +11,10 @@ from typing import AsyncIterator, Dict, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from openai import AsyncOpenAI
 
+from agents.synthesizer import SYSTEM_PROMPT
+
 router = APIRouter()
 client = AsyncOpenAI()
-
-SYSTEM_PROMPT = """You are a precise research assistant. Answer using ONLY
-the provided context. Cite sources using [source_N] notation."""
 
 
 class ConnectionManager:
@@ -148,7 +147,7 @@ async def websocket_query(websocket: WebSocket):
             except Exception as e:
                 await manager.send(conn_id, {"type": "error", "message": str(e)})
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.TimeoutError):
         manager.disconnect(conn_id)
 
 

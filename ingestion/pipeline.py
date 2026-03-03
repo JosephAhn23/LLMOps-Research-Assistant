@@ -114,15 +114,27 @@ class IngestionPipeline:
         dim = embeddings.shape[1]
         import faiss
 
-        self.index = faiss.IndexFlatIP(dim)  # inner product = cosine on normalized vecs
+        if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
+            # Append to the existing index so prior documents are preserved.
+            self.index = faiss.read_index(INDEX_PATH)
+            with open(META_PATH, encoding="utf-8") as f:
+                existing_meta = json.load(f)
+        else:
+            self.index = faiss.IndexFlatIP(dim)  # inner product = cosine on normalized vecs
+            existing_meta = []
+
         self.index.add(embeddings)
-        self.metadata = all_meta
+        self.metadata = existing_meta + all_meta
 
         faiss.write_index(self.index, INDEX_PATH)
         with open(META_PATH, "w", encoding="utf-8") as f:
             json.dump(self.metadata, f)
 
-        logger.info("Indexed %d chunks into FAISS.", len(all_chunks))
+        logger.info(
+            "Indexed %d new chunks (total: %d) into FAISS.",
+            len(all_chunks),
+            self.index.ntotal,
+        )
 
     def load(self):
         import faiss

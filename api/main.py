@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
 from agents.orchestrator import run_pipeline
@@ -16,13 +18,35 @@ from api.websocket_streaming import router as websocket_router
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# CORS — restrict to an explicit allowlist in production.
+# Set CORS_ORIGINS="https://app.example.com,https://admin.example.com" to
+# override. Falls back to localhost-only for local development.
+# ---------------------------------------------------------------------------
+_raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080")
+_allow_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
+# ---------------------------------------------------------------------------
+# Optional API-key authentication.
+# Set API_KEY env var to require a bearer key on all mutating endpoints.
+# When unset, auth is skipped (dev mode).
+# ---------------------------------------------------------------------------
+_API_KEY = os.getenv("API_KEY", "")
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def _require_api_key(key: str | None = Security(_api_key_header)) -> None:
+    if _API_KEY and key != _API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
 app = FastAPI(title="LLMOps Research Assistant")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allow_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 app.include_router(websocket_router)
@@ -37,7 +61,46 @@ class BatchRequest(BaseModel):
     queries: list[str]
 
 
-@app.post("/query")
+class RetrieveRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    rerank: bool = True
+
+
+class IngestRequest(BaseModel):
+    content: str
+    metadata: dict = {}
+    chunk_size: int = 512
+
+
+@app.post("/retrieve", dependencies=[Security(_require_api_key)])
+async def retrieve(request: RetrieveRequest):
+    """Retrieve and optionally rerank documents — used by the MCP server."""
+    from agents.orchestrator import get_pipeline
+
+    pipeline = get_pipeline()
+    chunks = await asyncio.to_thread(pipeline.retriever.retrieve, request.query)
+    if request.rerank:
+        chunks = await asyncio.to_thread(pipeline.reranker.rerank, request.query, chunks)
+    return {"results": chunks[: request.top_k]}
+
+
+@app.post("/ingest", dependencies=[Security(_require_api_key)])
+async def ingest(request: IngestRequest):
+    """Ingest a document into the FAISS index — used by the MCP server."""
+    from ingestion.pipeline import IngestionPipeline
+
+    doc_id = str(uuid.uuid4())
+    source = (request.metadata or {}).get("source", doc_id)
+    pipeline = IngestionPipeline()
+    await asyncio.to_thread(
+        pipeline.ingest_documents,
+        [{"id": doc_id, "text": request.content, "source": source}],
+    )
+    return {"status": "ingested", "doc_id": doc_id, "source": source}
+
+
+@app.post("/query", dependencies=[Security(_require_api_key)])
 async def query_realtime(request: QueryRequest):
     result = await asyncio.to_thread(run_pipeline, request.query)
     if result.get("error"):
@@ -49,7 +112,7 @@ async def query_realtime(request: QueryRequest):
     }
 
 
-@app.post("/batch")
+@app.post("/batch", dependencies=[Security(_require_api_key)])
 async def query_batch(request: BatchRequest, background_tasks: BackgroundTasks):
     from api.batch import enqueue_batch_job
 

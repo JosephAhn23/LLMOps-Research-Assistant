@@ -9,12 +9,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
 
+import hashlib
+import os
+
 import mlflow
 import numpy as np
 import redis
 from scipy import stats
 
-redis_client = redis.from_url("redis://localhost:6379/0")
+redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
 
 class ExperimentStatus(Enum):
@@ -94,7 +97,11 @@ class ABExperiment:
             variant_name = cached.decode()
             return self.variants[variant_name]
 
-        hash_val = int(uuid.UUID(user_id).int % 10000) / 10000
+        try:
+            hash_val = int(uuid.UUID(user_id).int % 10000) / 10000
+        except ValueError:
+            # user_id is not a UUID — fall back to MD5 hash for stable assignment.
+            hash_val = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % 10000 / 10000
 
         cumulative = 0.0
         assigned_variant = list(self.variants.values())[-1]

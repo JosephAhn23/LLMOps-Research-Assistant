@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from mcp import types
@@ -17,6 +18,9 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 logger = logging.getLogger(__name__)
+
+_API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+_BENCHMARK_URL = os.getenv("BENCHMARK_URL", "http://localhost:8001")
 
 app = Server("llmops-research-assistant")
 
@@ -154,7 +158,7 @@ async def _handle_retrieve(args: dict) -> dict:
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8000/retrieve",
+            f"{_API_BASE_URL}/retrieve",
             json={
                 "query": args["query"],
                 "top_k": args.get("top_k", 5),
@@ -170,7 +174,7 @@ async def _handle_ingest(args: dict) -> dict:
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8000/ingest",
+            f"{_API_BASE_URL}/ingest",
             json={
                 "content": args["content"],
                 "metadata": args.get("metadata", {}),
@@ -229,7 +233,7 @@ async def _handle_benchmark(args: dict) -> dict:
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8001/benchmark",
+            f"{_BENCHMARK_URL}/benchmark",
             json=args,
             timeout=300.0,
         )
