@@ -1,6 +1,7 @@
-Redesign README as polished product page with visual assets
+Add deployment status clarity and methodology notes to README
 
-- Add dark/glow AI hero banner, architecture diagram, and metrics dashboard images
-- Rewrite copy to be product-oriented with less technical jargon
-- Add shields.io badges, centered layouts, and clean section structure
-- Keep all benchmark numbers and technical depth, just presented better
+- Clarify what runs locally vs. requires AWS/GPU/cluster
+- Add status column to capabilities table
+- Add notes column to performance table with measurement context
+- Add RAGAS methodology note
+- Fix CloudWatch claim to "implemented; requires AWS deployment"
