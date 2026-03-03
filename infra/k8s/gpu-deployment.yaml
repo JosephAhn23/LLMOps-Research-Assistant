@@ -1,0 +1,32 @@
+# GPU node for fine-tuning jobs
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llmops-finetune
+  namespace: llmops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llmops-finetune
+  template:
+    metadata:
+      labels:
+        app: llmops-finetune
+    spec:
+      nodeSelector:
+        accelerator: nvidia-gpu
+      containers:
+        - name: finetune
+          image: josephahn63/llmops-research-assistant:latest
+          command: ["python", "-m", "finetune.ray_finetune"]
+          envFrom:
+            - configMapRef:
+                name: llmops-config
+            - secretRef:
+                name: llmops-secrets
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "16Gi"
+              cpu: "4000m"

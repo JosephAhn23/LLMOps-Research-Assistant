@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llmops-api
+  namespace: llmops
+  labels:
+    app: llmops-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: llmops-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: llmops-api
+    spec:
+      containers:
+        - name: api
+          image: josephahn63/llmops-research-assistant:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: llmops-config
+            - secretRef:
+                name: llmops-secrets
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llmops-api-service
+  namespace: llmops
+spec:
+  selector:
+    app: llmops-api
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: LoadBalancer

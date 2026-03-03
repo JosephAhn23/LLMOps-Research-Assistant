@@ -1,0 +1,24 @@
+{
+  "mode": "offline_pipeline",
+  "runs_requested": 20,
+  "runs_succeeded": 20,
+  "runs_failed": 0,
+  "success_rate": 1.0,
+  "concurrency": 5,
+  "latency_ms": {
+    "min": 0.1753999968059361,
+    "mean": 18.985014999634586,
+    "p50": 0.2556999970693141,
+    "p95": 75.84150000184309,
+    "max": 76.82139999815263
+  },
+  "throughput_qps": 254.73066691147093,
+  "elapsed_s": 0.07851429999573156,
+  "failure_samples": [],
+  "metadata": {
+    "timestamp_utc": "2026-03-03T15:58:32.405874+00:00",
+    "python": "3.13.7",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "git_sha": "9bc67d9"
+  }
+}
