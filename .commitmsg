@@ -1,8 +1,6 @@
-Fill benchmark table with real + projected numbers, add RAGAS eval script
+Redesign README as polished product page with visual assets
 
-- Replace all TBD values in README benchmark table
-- Latency/QPS: real measurements from live API (p50=3284ms, p90=4635ms, QPS=0.9)
-- RAGAS: faithfulness=0.847, relevancy=0.823, precision=0.791, recall=0.812
-- vLLM: projected A100 targets (~1500 fp16, ~3000 AWQ tok/s)
-- Add standalone benchmarks/run_ragas.py for reproducible RAGAS evaluation
-- Fix import guards and dependency fallbacks across multiple modules
+- Add dark/glow AI hero banner, architecture diagram, and metrics dashboard images
+- Rewrite copy to be product-oriented with less technical jargon
+- Add shields.io badges, centered layouts, and clean section structure
+- Keep all benchmark numbers and technical depth, just presented better

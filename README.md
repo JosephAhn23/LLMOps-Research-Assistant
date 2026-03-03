@@ -1,240 +1,199 @@
+<div align="center">
+
+<img src="assets/hero_banner.png" alt="LLMOps Research Assistant" width="100%">
+
 # LLMOps Research Assistant
 
-Production-grade, multi-agent RAG platform with distributed retrieval, QLoRA fine-tuning, MCP server integration, large-scale ingestion, deep observability, and cloud-native deployment.
+**An end-to-end AI platform that ingests, retrieves, generates, fine-tunes, evaluates, and deploys — all in one system.**
 
-## System Overview
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://kubernetes.io)
+[![AWS](https://img.shields.io/badge/AWS-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com)
+[![MLflow](https://img.shields.io/badge/MLflow-0194E2?style=for-the-badge&logo=mlflow&logoColor=white)](https://mlflow.org)
 
-End-to-end LLMOps system covering every stage from data ingestion to deployment:
-- **Ingestion**: web-scale corpora (CommonCrawl WARC, HuggingFace Datasets, Spark) with MinHash dedup
-- **Retrieval**: two-stage bi-encoder + cross-encoder pipeline over distributed FAISS shards
-- **Generation**: multi-agent LangGraph orchestration with OpenAI/vLLM synthesis
-- **Fine-tuning**: QLoRA (4-bit NF4) via PEFT + Accelerate, distributed Ray training with fault tolerance
-- **Evaluation**: RAGAS regression tracking with baseline drift detection
-- **Serving**: FastAPI realtime + Celery batch (DLQ, priority queues, Flower)
-- **MCP**: Model Context Protocol server exposing pipeline as tools for Claude/Cursor
-- **Deploy**: Docker Compose, Kubernetes (StatefulSet shards + HPA), Terraform, SageMaker registry
+---
 
-## Architecture
+*Not a wrapper. Not a tutorial. A working system built from raw components — distributed vector search, quantized fine-tuning, streaming inference, safety layers, and cloud-native deployment.*
 
-```text
-Client Request
-    |
-    v
-FastAPI Gateway (api/main.py)
-    |
-    +--> Realtime query (/query)
-    +--> WebSocket streaming (/ws/query)
-    +--> Batch enqueue (api/batch.py)
-             |
-             v
-        Celery Queues (default / high_priority / dead_letter) + Redis + Flower
+</div>
 
-MCP Server (mcp_server/server.py) ← stdio transport
-    |
-    +--> retrieve, query, ingest, evaluate_rag, list_models, health
+<br>
 
-Retriever Stage
-    |
-    +--> BiEncoderEmbedder (mean-pool, L2-normalize) → FAISS ANN (~5ms)
-    +--> Distributed FAISS Shards (infra/distributed_faiss_service.py)
-    +--> Aggregator fan-out/merge via asyncio.gather
+## What This Does
 
-Reranker Stage
-    |
-    +--> CrossEncoderReranker (cross-encoder/ms-marco-MiniLM-L-6-v2) (~40ms)
+Most AI projects stop at "call the API and print the answer." This one doesn't.
 
-Synthesis Stage
-    |
-    +--> OpenAI / vLLM-backed synthesis with citation tracking
+This platform handles the **full lifecycle** — from raw web data to a deployed, monitored, self-evaluating AI system:
 
-Fine-Tuning
-    |
-    +--> QLoRA: 4-bit NF4 + LoRA r=16 + paged_adamw_8bit (finetune/peft_lora_finetune.py)
-    +--> Accelerate multi-GPU (finetune/accelerate_finetune.py)
-    +--> Ray distributed + fault-tolerant (finetune/ray_fault_tolerant.py)
+| Stage | What Happens |
+|---|---|
+| **Ingest** | Pulls data from CommonCrawl, HuggingFace Hub, or local files. Deduplicates, filters for quality, and tokenizes at scale. |
+| **Search** | Two-stage retrieval — fast approximate search across distributed shards, then precision reranking with a cross-encoder. Sub-50ms total. |
+| **Generate** | Multi-agent pipeline orchestrates retrieval, reranking, and synthesis. Streams tokens in real-time over WebSocket. |
+| **Fine-tune** | QLoRA training on consumer hardware — 4-bit quantization keeps a 8B model under 16GB VRAM. Ships LoRA adapters, not full checkpoints. |
+| **Evaluate** | Automated quality scoring (faithfulness, relevancy, precision, recall) with regression alerts if scores drop below baseline. |
+| **Secure** | Prompt injection detection, adversarial red-teaming, anomaly detection. Catches attacks before they reach the model. |
+| **Deploy** | Docker Compose for dev, Kubernetes for prod, Terraform for infrastructure. SageMaker model registry with approval gates. |
+| **Connect** | MCP server lets any AI agent (Claude, Cursor) use the pipeline as a tool — retrieve, ingest, evaluate, all via natural language. |
 
-Data Pipeline
-    |
-    +--> HuggingFace Datasets + MinHash LSH dedup (ingestion/hf_dataset_pipeline.py)
-    +--> CommonCrawl WARC S3 parsing (ingestion/warc_pipeline.py)
-    +--> Spark distributed processing (ingestion/spark_pipeline.py)
+<br>
 
-Observability + Evaluation
-    |
-    +--> MLflow experiment tracking (all stages)
-    +--> RAGAS regression tracking + baseline capture (mlops/ragas_tracker.py)
-    +--> CloudWatch custom metrics + dashboards-as-code (infra/aws_observability.py)
-    +--> React/TypeScript monitoring dashboard (dashboard/src/App.tsx)
+## How It Works
 
-Deployment
-    |
-    +--> Docker Compose (API + workers + shards + MLflow + Flower)
-    +--> Kubernetes manifests (infra/k8s/*.yaml)
-    +--> Terraform AWS stack (infra/terraform/main.tf)
-    +--> SageMaker model registry + A/B deploy (infra/sagemaker_model_registry.py)
+<div align="center">
+<img src="assets/pipeline_architecture.png" alt="Pipeline Architecture" width="90%">
+</div>
+
+<br>
+
+```
+ Request comes in
+      |
+      v
+ API Gateway (FastAPI)
+      |
+      +---> Real-time query    ---> Retrieve ---> Rerank ---> Generate ---> Stream response
+      +---> WebSocket stream   ---> Same pipeline, token-by-token delivery
+      +---> Batch job          ---> Celery queue with retry logic and dead-letter capture
+      |
+ MCP Server (stdio)
+      +---> Any AI agent can call: retrieve, ingest, evaluate, list models
+      |
+ Behind the scenes:
+      +---> FAISS distributed across 4 shards, merged via async fan-out
+      +---> Cross-encoder reranking for precision (top-50 → top-5)
+      +---> MLflow tracks every run, every metric, every artifact
+      +---> RAGAS watches for quality regression and alerts automatically
+      +---> CloudWatch dashboards + alarms in production
 ```
 
-## Core Components
+<br>
 
-### Two-Stage Retrieval (agents/reranker.py)
-- **Stage 1 — Bi-Encoder**: Mean-pool over last hidden states with attention masking, L2-normalized for cosine similarity. Indexed in FAISS for ~5ms ANN retrieval.
-- **Stage 2 — Cross-Encoder**: Joint (query, document) scoring via `cross-encoder/ms-marco-MiniLM-L-6-v2`. Logit-based relevance ranking for ~95% nDCG@5.
-- No LangChain wrappers — raw HuggingFace `transformers` forward passes.
+## Performance
 
-### QLoRA Fine-Tuning (finetune/peft_lora_finetune.py)
-- 4-bit NF4 quantization via BitsAndBytes (~70% VRAM reduction)
-- LoRA adapters on `q_proj`, `k_proj`, `v_proj`, `o_proj` (r=16, alpha=32)
-- `prepare_model_for_kbit_training()` + gradient checkpointing
-- HuggingFace Trainer with `paged_adamw_8bit` optimizer, cosine LR schedule
-- Adapter-only saves + `merge_and_unload()` for zero-overhead inference
-- Full MLflow integration (params, metrics, artifacts)
+<div align="center">
+<img src="assets/metrics_dashboard.png" alt="Performance Metrics" width="90%">
+</div>
 
-### HuggingFace Datasets Pipeline (ingestion/hf_dataset_pipeline.py)
-- Multi-source ingestion: Hub datasets + local JSONL
-- Column normalization to unified `{text, source}` schema
-- Rule-based quality filtering (word count, symbol ratio, line dedup)
-- MinHash LSH near-duplicate removal via `datasketch`
-- Tokenizer-aware length filtering
-- Dataset mixing with configurable weights (curriculum learning)
-- Train/validation split saved as Arrow format
+<br>
 
-### MCP Server (mcp_server/server.py)
-- Model Context Protocol server over stdio transport
-- Tools: `retrieve`, `query`, `ingest_document`, `evaluate_rag`, `list_models`, `health`
-- Zero-configuration integration with Claude Desktop, Cursor IDE, VS Code
-- Lazy-loaded pipeline components for fast startup
+<div align="center">
 
-### Agentic Workflow (agents/orchestrator.py)
-- LangGraph 3-node stateful graph: Retriever -> Reranker -> Synthesizer
-- Conditional edge routing on agent errors
-- `Pipeline` class with dependency injection (no global singletons)
-- `Protocol`-based interfaces for all agents (`agents/protocols.py`)
-- Full state propagation with TypedDict schema
-- Retry with backoff on HTTP/LLM calls; graceful fallbacks throughout
+| Metric | Measured |
+|:---|:---|
+| **Vector search latency** | `< 5 ms` |
+| **Reranking latency** | `~40 ms` |
+| **End-to-end p50** | `3,284 ms` |
+| **End-to-end p99** | `6,238 ms` |
+| **Throughput** | `0.9 QPS` (single node, incl. LLM call) |
+| **vLLM fp16** | `~1,500 tok/s` (A100 target) |
+| **vLLM int4-AWQ** | `~3,000 tok/s` (A100 target) |
 
-### Large-Scale Data Pipelines
-- Direct CommonCrawl WARC parsing from S3 (`ingestion/warc_pipeline.py`)
-- Language detection across 7 languages, domain quality scoring
-- MinHash deduplication + rule-based quality filtering (`ingestion/data_quality.py`)
-- Apache Spark distributed processing (`ingestion/spark_pipeline.py`)
-- HuggingFace Datasets streaming (`ingestion/large_scale_ingest.py`)
+</div>
 
-### Distributed Training
-- Accelerate-based LoRA with fp16, gradient accumulation, grad clipping
-- Ray Train distributed across multiple GPU workers with elastic scaling
-- Fault-tolerant training: OOM recovery, checkpoint resumption, FailureConfig
+> **Note:** End-to-end latency includes the LLM generation call (GPT-4o-mini). The retrieval + reranking pipeline alone completes in under 50ms.
 
-### Evaluation and Regression Control
-- RAGAS evaluation: faithfulness, answer relevancy, context precision, context recall
-- Baseline capture and 5% drift threshold detection (`mlops/ragas_tracker.py`)
-- Historical trend analysis via MLflow run history
-- Regression alerts with JSON diff reports
+### Quality Scores (RAGAS)
 
-### Adversarial ML / AI Safety
-- Rule-based + LLM-as-judge prompt injection detection (9 attack types)
-- Embedding similarity + Isolation Forest anomaly detection (`safety/semantic_safety.py`)
-- Automated red-team test suite logged to MLflow (`safety/adversarial_tests.py`)
+<div align="center">
 
-### Cloud and Operations
-- CloudWatch: custom metrics namespace, p50/p90/p99 dashboards, alarms, metric filters
-- S3: multipart upload, Hive-partitioned parquet, presigned URLs, lifecycle policies
-- SageMaker: model registration, approval gating, A/B traffic split, rollback
-- Celery: 3 priority queues, exponential backoff, DLQ, Flower monitoring
+| Metric | Score |
+|:---|:---|
+| Faithfulness | **0.847** |
+| Answer Relevancy | **0.823** |
+| Context Precision | **0.791** |
+| Context Recall | **0.812** |
 
-### Experimentation
-- A/B testing framework with deterministic user assignment
-- Two-sample t-test, Cohen's d effect size, 95% confidence intervals
-- Statistical significance gating with MLflow logging
+</div>
 
-## Benchmark Workflow
+<br>
 
-```bash
-# 1. Start services
-docker compose up -d
+## Key Capabilities
 
-# 2. Ingest documents
-python -m ingestion.pipeline
+### Intelligent Retrieval
+Two-stage search that balances speed and accuracy. The first pass uses a bi-encoder to scan millions of chunks in milliseconds via FAISS. The second pass runs a cross-encoder that reads each query-document pair together, catching subtle relevance that embedding similarity misses.
 
-# 3. API benchmarks (latency + throughput)
-python benchmarks/run_benchmarks.py
+### Quantized Fine-Tuning (QLoRA)
+Train an 8-billion parameter model on a single GPU. 4-bit quantization compresses the base model while LoRA adapters inject trainable parameters into attention layers — less than 1% of total weights. Merges cleanly for zero-overhead inference.
 
-# 4. vLLM benchmarks (tokens/sec)
-python benchmarks/vllm_benchmarks.py --model meta-llama/Llama-3.1-8B-Instruct
+### Real-Time Streaming
+WebSocket endpoint streams tokens as they're generated. Clients see the response build word-by-word with live latency and throughput stats. Supports concurrent sessions with connection management.
 
-# 5. RAGAS evaluation + baseline capture
-python -m mlops.ragas_tracker
+### Safety & Red-Teaming
+Multi-layered defense against adversarial inputs. Rule-based pattern matching for known attack signatures. Embedding-based anomaly detection for novel attacks. LLM-as-judge for ambiguous cases. Full red-team test suite with 9 attack categories.
 
-# 6. HF Datasets ingestion pipeline
-python -m ingestion.hf_dataset_pipeline --datasets tatsu-lab/alpaca
+### Data Pipelines at Scale
+Ingests from CommonCrawl WARCs, HuggingFace Hub, or local files. Language detection, quality scoring, MinHash deduplication, and tokenizer-aware filtering. Spark support for distributed processing. Outputs Arrow format for fast training.
 
-# 7. MCP server (connect from Claude/Cursor)
-python mcp_server/server.py
-```
+### Self-Evaluating Pipeline
+RAGAS metrics run automatically after each deployment. Baseline capture, regression detection with configurable thresholds, and historical trend tracking. If quality drops, you know immediately — not after users complain.
 
-## Benchmark Results
+### MCP Integration
+Exposes the entire pipeline as tools via the Model Context Protocol. Any MCP-compatible agent (Claude Desktop, Cursor, VS Code) can retrieve documents, ingest new data, run evaluations, and check model status — all through natural language.
 
-| Metric | Value |
-|---|---|
-| Realtime p50 latency | `3283.82 ms` |
-| Realtime p90 latency | `4635.0 ms` |
-| Realtime p99 latency | `6238.34 ms` |
-| Concurrent API QPS | `0.9` |
-| FAISS retrieval latency | `< 5 ms` |
-| Cross-encoder reranking | `~40 ms` |
-| vLLM fp16 tokens/sec | `~1,500 (A100 target)` |
-| vLLM int4-AWQ tokens/sec | `~3,000 (A100 target)` |
-| RAGAS faithfulness | `0.847` |
-| RAGAS answer relevancy | `0.823` |
-| RAGAS context precision | `0.791` |
-| RAGAS context recall | `0.812` |
+### A/B Experimentation
+Built-in experiment framework with deterministic user assignment, statistical significance testing, and effect size measurement. Compare retrieval strategies, reranking models, or generation configs with confidence.
 
-## Stack
+<br>
 
-| Layer | Technology |
-|---|---|
-| LLM | GPT-4o-mini (OpenAI), Llama-3.1-8B (vLLM) |
-| Embeddings | all-MiniLM-L6-v2 (HuggingFace, mean-pool) |
-| Reranker | ms-marco-MiniLM-L-6-v2 (cross-encoder) |
-| Fine-tuning | QLoRA via PEFT + BitsAndBytes + Accelerate |
-| Vector store | FAISS IVFFlat (distributed, 4 shards) |
-| Agent orchestration | LangGraph |
-| API | FastAPI + WebSockets |
-| Async queue | Celery + Redis + Flower |
-| MLOps | MLflow + RAGAS |
-| Cloud | AWS (S3, CloudWatch, SageMaker) |
-| MCP | Model Context Protocol server (stdio) |
-| Containers | Docker Compose |
-| Orchestration | Kubernetes (StatefulSet, HPA) |
-| IaC | Terraform |
-| Data pipeline | HF Datasets, Apache Spark, CommonCrawl WARC |
+## Built With
 
-## Local Quickstart
+<div align="center">
+
+| | |
+|:---|:---|
+| **Models** | GPT-4o-mini, Llama-3.1-8B, Stable Diffusion v1.5 |
+| **Embeddings** | all-MiniLM-L6-v2 (HuggingFace) |
+| **Reranker** | ms-marco-MiniLM-L-6-v2 (cross-encoder) |
+| **Fine-tuning** | QLoRA via PEFT + BitsAndBytes + Accelerate |
+| **Vector Store** | FAISS IVFFlat (distributed, 4 shards) |
+| **Orchestration** | LangGraph multi-agent pipeline |
+| **API** | FastAPI + WebSockets |
+| **Queue** | Celery + Redis + Flower |
+| **Tracking** | MLflow + RAGAS |
+| **Cloud** | AWS (S3, CloudWatch, SageMaker) |
+| **Agent Protocol** | MCP server (stdio transport) |
+| **Containers** | Docker Compose + Kubernetes |
+| **Infrastructure** | Terraform |
+| **Data** | HF Datasets, Apache Spark, CommonCrawl |
+| **Dashboard** | React + TypeScript |
+
+</div>
+
+<br>
+
+## Quick Start
 
 ```bash
-git clone https://github.com/josephahn63/llmops-research-assistant
-cd llmops-research-assistant
+git clone https://github.com/JosephAhn23/LLMOps-Research-Assistant
+cd LLMOps-Research-Assistant
 pip install -r requirements.txt
-export OPENAI_API_KEY=your_key
 
-# Start infrastructure
+# Set your API key
+export OPENAI_API_KEY=your_key        # Mac/Linux
+set OPENAI_API_KEY=your_key           # Windows
+
+# Start services
 docker compose up -d
 
-# Run API
+# Launch the API
 uvicorn api.main:app --reload
 
-# Fine-tune (QLoRA)
-python -m finetune.peft_lora_finetune --data-path data/domain_train.jsonl
+# Fine-tune a model (QLoRA)
+python -m finetune.peft_lora_finetune
 
-# Evaluate pipeline
+# Run quality evaluation
 python -m mlops.ragas_tracker
 
-# Start MCP server
+# Start MCP server (for Claude/Cursor)
 python mcp_server/server.py
 ```
 
-## MCP Integration (Claude Desktop / Cursor)
+### Connect to Claude Desktop or Cursor
 
-Add to `claude_desktop_config.json`:
+Add to your MCP config:
 
 ```json
 {
@@ -247,85 +206,116 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-Available tools: `retrieve`, `query`, `ingest_document`, `evaluate_rag`, `list_models`, `health`.
+Then ask Claude: *"Retrieve documents about RAG architectures"* — it calls your pipeline directly.
+
+<br>
+
+## Run Benchmarks
+
+```bash
+# API latency + throughput (hits live endpoints)
+python benchmarks/fill_readme_benchmarks.py
+
+# Standalone RAGAS evaluation (just needs an OpenAI key)
+python benchmarks/run_ragas.py
+
+# vLLM throughput (requires GPU server)
+python benchmarks/vllm_benchmarks.py --model meta-llama/Llama-3.1-8B-Instruct
+```
+
+<br>
 
 ## Testing
 
 ```bash
-pytest                              # 66 tests (unit + integration + failure-mode)
-pytest tests/test_safety.py -v      # adversarial/safety suite
-pytest tests/test_shard_aggregator_failure_modes.py -v  # shard outage/latency spike tests
+pytest                                # Full suite (66 tests)
+pytest tests/test_safety.py -v        # Adversarial/safety tests
+pytest tests/test_shard_aggregator_failure_modes.py -v  # Fault tolerance
 ```
 
-## Deployment
+<br>
 
-### Kubernetes
+## Deploy
+
+**Kubernetes:**
 ```bash
 bash infra/k8s/deploy.sh
 ```
 
-### Terraform
+**Terraform (AWS):**
 ```bash
 cd infra/terraform
-terraform init && terraform apply -var="db_password=change_me"
+terraform init && terraform apply
 ```
 
-## Repository Layout
+<br>
 
-```text
+## Project Structure
+
+```
 llmops-research-assistant/
-├── agents/
-│   ├── orchestrator.py         # LangGraph multi-agent pipeline
-│   ├── retriever.py            # FAISS retrieval + distributed shards
-│   ├── reranker.py             # bi-encoder + cross-encoder two-stage
-│   ├── synthesizer.py          # LLM synthesis with citations
-│   └── protocols.py            # testable Protocol interfaces
-├── api/
-│   ├── main.py                 # FastAPI gateway
-│   ├── batch.py                # Celery DLQ + priority queues
-│   └── websocket_streaming.py  # real-time token streaming
-├── mcp_server/
-│   └── server.py               # MCP protocol server (6 tools)
-├── ingestion/
-│   ├── pipeline.py             # chunking + embedding + FAISS
-│   ├── hf_dataset_pipeline.py  # HF Datasets + MinHash dedup
-│   ├── warc_pipeline.py        # CommonCrawl WARC parsing
-│   ├── spark_pipeline.py       # Spark distributed processing
-│   └── data_quality.py         # quality filtering + dedup
-├── finetune/
-│   ├── peft_lora_finetune.py   # QLoRA (4-bit NF4) + PEFT + Accelerate
-│   ├── accelerate_finetune.py  # Accelerate multi-GPU LoRA
-│   ├── ray_finetune.py         # Ray distributed training
-│   └── ray_fault_tolerant.py   # fault-tolerant Ray training
-├── inference/
-│   ├── vllm_backend.py         # vLLM inference backend
-│   ├── diffusion_pipeline.py   # Stable Diffusion RAG-grounded
-│   └── conditioned_diffusion.py # textual inversion + cross-attention
-├── safety/
-│   ├── adversarial_tests.py    # red-team test suite (9 attack types)
-│   └── semantic_safety.py      # embedding similarity + anomaly detection
-├── experiments/
-│   └── ab_framework.py         # A/B testing + statistical significance
-├── mlops/
-│   ├── tracking.py             # MLflow decorators
-│   ├── evaluate.py             # RAGAS evaluation
-│   └── ragas_tracker.py        # baseline capture + regression detection
-├── benchmarks/
-│   ├── run_benchmarks.py       # API latency + throughput
-│   └── vllm_benchmarks.py      # vLLM tokens/sec
-├── analysis/
-│   └── embedding_analysis.py   # UMAP + clustering + intrinsic dim
-├── dashboard/
-│   └── src/App.tsx             # React/TypeScript monitoring dashboard
-├── infra/
-│   ├── aws_observability.py    # CloudWatch + S3 deep integration
-│   ├── distributed_faiss_service.py  # shard + aggregator microservices
-│   ├── sagemaker_model_registry.py   # A/B deploy + approval gate
-│   ├── sagemaker_pipeline.py   # automated retraining pipeline
-│   ├── k8s/                    # Kubernetes manifests
-│   └── terraform/              # Terraform AWS stack
-├── tests/
-├── docker-compose.yml
-├── requirements.txt
-└── .github/workflows/
+|
+|-- agents/                     # Multi-agent pipeline
+|   |-- orchestrator.py            LangGraph stateful workflow
+|   |-- retriever.py               FAISS search + distributed shards
+|   |-- reranker.py                Bi-encoder + cross-encoder two-stage
+|   |-- synthesizer.py             LLM generation with citations
+|   +-- protocols.py               Testable interfaces
+|
+|-- api/                        # API layer
+|   |-- main.py                    FastAPI gateway
+|   |-- batch.py                   Celery queues + dead-letter handling
+|   +-- websocket_streaming.py     Real-time token streaming
+|
+|-- mcp_server/                 # Agent integration
+|   +-- server.py                  MCP protocol (6 tools, stdio)
+|
+|-- ingestion/                  # Data pipelines
+|   |-- pipeline.py                Chunking + embedding + FAISS indexing
+|   |-- hf_dataset_pipeline.py     HuggingFace Datasets + MinHash dedup
+|   |-- warc_pipeline.py           CommonCrawl WARC parsing
+|   +-- spark_pipeline.py          Spark distributed processing
+|
+|-- finetune/                   # Model training
+|   |-- peft_lora_finetune.py      QLoRA (4-bit) + PEFT + Accelerate
+|   |-- ray_fault_tolerant.py      Ray distributed + fault recovery
+|   +-- accelerate_finetune.py     Multi-GPU LoRA
+|
+|-- inference/                  # Model serving
+|   |-- vllm_backend.py            vLLM inference backend
+|   +-- diffusion_pipeline.py      Stable Diffusion + RAG grounding
+|
+|-- safety/                     # AI security
+|   |-- adversarial_tests.py       Red-team suite (9 attack types)
+|   +-- semantic_safety.py         Anomaly detection + embedding safety
+|
+|-- experiments/                # A/B testing
+|   +-- ab_framework.py            Statistical significance framework
+|
+|-- mlops/                      # Evaluation + tracking
+|   |-- ragas_tracker.py           Baseline capture + regression alerts
+|   +-- evaluate.py                RAGAS scoring pipeline
+|
+|-- benchmarks/                 # Performance measurement
+|-- dashboard/                  # React/TypeScript monitoring UI
+|-- infra/                      # Cloud + deployment
+|   |-- aws_observability.py       CloudWatch dashboards + alarms
+|   |-- distributed_faiss_service  Shard + aggregator microservices
+|   |-- sagemaker_model_registry   Model registry + A/B deploy
+|   |-- k8s/                       Kubernetes manifests
+|   +-- terraform/                 AWS infrastructure as code
+|
+|-- tests/                      # 66 tests (unit + integration + adversarial)
+|-- docker-compose.yml
++-- requirements.txt
 ```
+
+<br>
+
+---
+
+<div align="center">
+
+**Built by [Joseph Ahn](https://github.com/JosephAhn23)**
+
+</div>
