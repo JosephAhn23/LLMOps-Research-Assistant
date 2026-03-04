@@ -12,7 +12,13 @@ Production dataset engineering for LLM pipelines:
 from dataset_engineering.versioning import DatasetVersion, DatasetLineage
 from dataset_engineering.quality import QualityChecker, QualityReport, QualityIssue
 from dataset_engineering.synthetic import SyntheticQAGenerator, SyntheticDataset, SyntheticQA
-from dataset_engineering.feature_store import FeatureStore, FeatureSpec, FeatureVector
+from dataset_engineering.feature_store import (
+    FeatureStore,
+    FeatureDefinition,
+    FeatureSnapshot,
+    FeatureSpec,      # alias for FeatureDefinition
+    FeatureVector,    # alias for FeatureSnapshot
+)
 
 # Backwards-compatible aliases
 DataQualityChecker = QualityChecker
@@ -28,6 +34,8 @@ __all__ = [
     "SyntheticDataset",
     "SyntheticQA",
     "FeatureStore",
+    "FeatureDefinition",
+    "FeatureSnapshot",
     "FeatureSpec",
     "FeatureVector",
     # aliases

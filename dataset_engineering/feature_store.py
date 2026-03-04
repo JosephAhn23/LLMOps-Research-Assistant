@@ -1,26 +1,13 @@
 """
-Versioned feature registry for the RAG pipeline.
+dataset_engineering/feature_store.py
+--------------------------------------
+Lightweight feature store for LLMOps pipelines.
 
-Provides:
-  - Feature registration with schema and dependency tracking
-  - Point-in-time correct feature retrieval (prevents training/serving skew)
-  - Online (low-latency dict) and offline (DataFrame) serving paths
-  - Feature lineage: which features depend on which raw columns
-  - Schema versioning: detect breaking changes
-
-This is a lightweight, local-first feature store. For production at scale,
-replace the in-memory store with Redis (online) + Delta Lake (offline).
-
-Usage:
-    store = FeatureStore()
-    store.register(
-        name="query_complexity",
-        fn=lambda df: df["query"].str.split().str.len() / 100,
-        depends_on=["query"],
-        description="Normalized query token count",
-    )
-    features = store.compute(df, feature_names=["query_complexity"])
-    online_record = store.serve_online({"query": "What is RAG?"})
+Features:
+  - Register feature definitions with schema + transformation logic
+  - Versioned feature snapshots (point-in-time correct)
+  - Online (dict lookup) + offline (parquet) materialization
+  - Feature lineage and dependency graph
 """
 
 from __future__ import annotations
@@ -29,257 +16,195 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
-import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class FeatureSpec:
+class FeatureDefinition:
     name: str
-    fn: Callable
-    depends_on: list[str]
     description: str
-    version: int = 1
-    dtype: str = "float64"
-    tags: dict[str, str] = field(default_factory=dict)
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    dtype: str                       # "float", "int", "str", "embedding"
+    transform_fn: Callable           # raw_df -> Series or ndarray
+    dependencies: list[str] = field(default_factory=list)
+    version: str = "v1.0"
+    tags: list[str] = field(default_factory=list)
 
-    def signature(self) -> str:
-        """Hash of the feature spec for change detection."""
-        content = f"{self.name}:{self.description}:{self.depends_on}:{self.version}"
-        return hashlib.sha256(content.encode()).hexdigest()[:8]
+    def compute(self, df: pd.DataFrame) -> pd.Series:
+        return self.transform_fn(df)
 
 
 @dataclass
-class FeatureVector:
-    entity_id: str
-    features: dict[str, float]
-    timestamp: str
-    version_signatures: dict[str, str] = field(default_factory=dict)
+class FeatureSnapshot:
+    feature_name: str
+    version: str
+    data: pd.Series
+    computed_at: str
+    content_hash: str
 
-    def to_dict(self) -> dict:
-        return {
-            "entity_id": self.entity_id,
-            "timestamp": self.timestamp,
-            "features": self.features,
-            "version_signatures": self.version_signatures,
-        }
+    @classmethod
+    def create(cls, name: str, version: str, data: pd.Series) -> "FeatureSnapshot":
+        from datetime import datetime, timezone
+        h = hashlib.sha256(data.to_json().encode()).hexdigest()
+        return cls(
+            feature_name=name,
+            version=version,
+            data=data,
+            computed_at=datetime.now(timezone.utc).isoformat(),
+            content_hash=h,
+        )
+
+
+# Legacy aliases for backwards compatibility
+FeatureSpec = FeatureDefinition
+FeatureVector = FeatureSnapshot
 
 
 class FeatureStore:
     """
-    Versioned feature registry with point-in-time correct serving.
+    Manages feature definitions, computation, and materialization.
 
-    Parameters
-    ----------
-    ttl_seconds : int
-        Cache TTL for online serving (default: 300s = 5 minutes).
+    Usage
+    -----
+    >>> store = FeatureStore(root_dir="features/")
+    >>> store.register(FeatureDefinition(
+    ...     name="query_len",
+    ...     description="Character length of query",
+    ...     dtype="int",
+    ...     transform_fn=lambda df: df["query"].str.len(),
+    ... ))
+    >>> features = store.compute_all(df)
+    >>> store.materialize(features, split="train")
     """
 
-    def __init__(self, ttl_seconds: int = 300) -> None:
-        self._registry: dict[str, FeatureSpec] = {}
-        self._online_cache: dict[str, tuple[FeatureVector, float]] = {}
-        self._ttl = ttl_seconds
+    def __init__(self, root_dir: str | Path = "features"):
+        self.root_dir = Path(root_dir)
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+        self._registry: dict[str, FeatureDefinition] = {}
+        self._snapshots: dict[str, FeatureSnapshot] = {}
 
-    def register(
+    def register(self, feature: FeatureDefinition) -> None:
+        """Register a feature definition."""
+        if feature.name in self._registry:
+            logger.info("Overwriting feature: %s", feature.name)
+        self._registry[feature.name] = feature
+        logger.info("Registered feature: %s (%s)", feature.name, feature.dtype)
+
+    def register_many(self, features: list[FeatureDefinition]) -> None:
+        for f in features:
+            self.register(f)
+
+    def compute(self, name: str, df: pd.DataFrame) -> FeatureSnapshot:
+        """Compute a single feature and cache the snapshot."""
+        if name not in self._registry:
+            raise KeyError(f"Feature '{name}' not registered")
+        feat = self._registry[name]
+        data = feat.compute(df)
+        snapshot = FeatureSnapshot.create(name, feat.version, data)
+        self._snapshots[name] = snapshot
+        logger.info("Computed feature '%s': shape=%s", name, data.shape)
+        return snapshot
+
+    def compute_all(
+        self, df: pd.DataFrame, tags: list[str] | None = None
+    ) -> dict[str, FeatureSnapshot]:
+        """Compute all registered features (optionally filtered by tag)."""
+        to_compute = [
+            f for f in self._registry.values()
+            if tags is None or any(t in f.tags for t in tags)
+        ]
+        snapshots = {}
+        for feat in self._resolve_dependency_order(to_compute):
+            snap = self.compute(feat.name, df)
+            snapshots[feat.name] = snap
+        return snapshots
+
+    def to_dataframe(self, snapshots: dict[str, FeatureSnapshot]) -> pd.DataFrame:
+        """Assemble snapshots into a feature DataFrame."""
+        return pd.DataFrame({name: snap.data for name, snap in snapshots.items()})
+
+    def materialize(
         self,
-        name: str,
-        fn: Callable,
-        depends_on: list[str],
-        description: str = "",
-        version: int = 1,
-        dtype: str = "float64",
-        tags: dict[str, str] | None = None,
-    ) -> "FeatureStore":
-        """
-        Register a feature transformation.
+        snapshots: dict[str, FeatureSnapshot],
+        split: str = "train",
+        fmt: str = "parquet",
+    ) -> Path:
+        """Write feature matrix to disk."""
+        df = self.to_dataframe(snapshots)
+        out_path = self.root_dir / f"{split}_features.{fmt}"
 
-        Parameters
-        ----------
-        name : str
-            Feature name (must be unique).
-        fn : Callable
-            Transformation function. For batch: takes a DataFrame, returns a Series.
-            For online: takes a dict of raw values, returns a float.
-        depends_on : list[str]
-            Raw column names this feature depends on.
-        description : str
-            Human-readable description for the feature catalog.
-        version : int
-            Increment when the transformation logic changes.
-        dtype : str
-            Expected output dtype.
-        tags : dict | None
-            Arbitrary metadata (e.g., {"team": "retrieval", "tier": "online"}).
-        """
-        if name in self._registry:
-            existing = self._registry[name]
-            if existing.version != version:
-                logger.warning(
-                    "Feature '%s' version changed: %d -> %d",
-                    name, existing.version, version,
-                )
+        if fmt == "parquet":
+            df.to_parquet(out_path, index=False)
+        elif fmt == "csv":
+            df.to_csv(out_path, index=False)
+        else:
+            raise ValueError(f"Unsupported format: {fmt}")
 
-        self._registry[name] = FeatureSpec(
-            name=name,
-            fn=fn,
-            depends_on=depends_on,
-            description=description,
-            version=version,
-            dtype=dtype,
-            tags=tags or {},
-        )
-        logger.debug("Registered feature '%s' v%d", name, version)
-        return self
-
-    def compute(
-        self,
-        df: Any,
-        feature_names: list[str] | None = None,
-        as_dataframe: bool = True,
-    ) -> Any:
-        """
-        Batch compute features from a DataFrame.
-
-        Parameters
-        ----------
-        df : DataFrame
-            Input data with raw columns.
-        feature_names : list[str] | None
-            Features to compute. If None, computes all registered features.
-        as_dataframe : bool
-            If True, returns a DataFrame with original columns + feature columns.
-            If False, returns a dict of {feature_name: Series}.
-        """
-        import pandas as pd
-
-        names = feature_names or list(self._registry.keys())
-        result = df.copy() if as_dataframe else {}
-
-        for name in names:
-            spec = self._registry.get(name)
-            if spec is None:
-                logger.warning("Feature '%s' not registered; skipping", name)
-                continue
-
-            missing = [c for c in spec.depends_on if c not in df.columns]
-            if missing:
-                logger.warning(
-                    "Feature '%s' missing dependencies: %s; skipping", name, missing
-                )
-                continue
-
-            try:
-                values = spec.fn(df)
-                if as_dataframe:
-                    result[name] = values
-                else:
-                    result[name] = values
-            except Exception as e:
-                logger.error("Feature '%s' computation failed: %s", name, e)
-
-        return result
-
-    def serve_online(
-        self,
-        raw: dict[str, Any],
-        feature_names: list[str] | None = None,
-        entity_id: str | None = None,
-    ) -> FeatureVector:
-        """
-        Compute features for a single entity (low-latency path).
-
-        Parameters
-        ----------
-        raw : dict
-            Raw feature values (e.g., {"query": "What is RAG?"}).
-        feature_names : list[str] | None
-            Features to compute. If None, computes all registered features.
-        entity_id : str | None
-            Optional entity identifier for cache lookup.
-        """
-        import time
-
-        if entity_id:
-            cached = self._online_cache.get(entity_id)
-            if cached is not None:
-                vec, ts = cached
-                if time.time() - ts < self._ttl:
-                    return vec
-
-        names = feature_names or list(self._registry.keys())
-        features: dict[str, float] = {}
-        signatures: dict[str, str] = {}
-
-        for name in names:
-            spec = self._registry.get(name)
-            if spec is None:
-                continue
-            missing = [k for k in spec.depends_on if k not in raw]
-            if missing:
-                continue
-            try:
-                val = spec.fn(raw)
-                features[name] = float(val)
-                signatures[name] = spec.signature()
-            except Exception as e:
-                logger.debug("Online feature '%s' failed: %s", name, e)
-
-        vec = FeatureVector(
-            entity_id=entity_id or "",
-            features=features,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            version_signatures=signatures,
-        )
-
-        if entity_id:
-            self._online_cache[entity_id] = (vec, time.time())
-
-        return vec
-
-    def lineage(self, feature_name: str) -> dict[str, Any]:
-        """Return the dependency tree for a feature."""
-        spec = self._registry.get(feature_name)
-        if spec is None:
-            return {}
-        return {
-            "name": spec.name,
-            "version": spec.version,
-            "description": spec.description,
-            "depends_on": spec.depends_on,
-            "signature": spec.signature(),
-            "tags": spec.tags,
+        meta = {
+            "split": split,
+            "features": [
+                {"name": name, "version": snap.version, "hash": snap.content_hash}
+                for name, snap in snapshots.items()
+            ],
         }
+        (self.root_dir / f"{split}_features.meta.json").write_text(
+            json.dumps(meta, indent=2)
+        )
+        logger.info("Materialized %d features -> %s", len(df.columns), out_path)
+        return out_path
 
-    def catalog(self) -> list[dict[str, Any]]:
-        """Return the full feature catalog."""
-        return [self.lineage(name) for name in self._registry]
+    def load(self, split: str = "train", fmt: str = "parquet") -> pd.DataFrame:
+        """Load a materialized feature matrix."""
+        path = self.root_dir / f"{split}_features.{fmt}"
+        if fmt == "parquet":
+            return pd.read_parquet(path)
+        return pd.read_csv(path)
 
-    def detect_schema_changes(self, previous_signatures: dict[str, str]) -> list[str]:
-        """
-        Detect features whose transformation logic has changed.
-        Returns a list of feature names with changed signatures.
-        """
-        changed = []
-        for name, spec in self._registry.items():
-            prev = previous_signatures.get(name)
-            if prev is not None and prev != spec.signature():
-                changed.append(name)
-                logger.warning(
-                    "Feature '%s' signature changed: %s -> %s",
-                    name, prev, spec.signature(),
-                )
-        return changed
+    def lineage_graph(self) -> dict[str, list[str]]:
+        """Return the feature dependency graph as an adjacency dict."""
+        return {f.name: f.dependencies for f in self._registry.values()}
 
-    def export_catalog(self, path: str) -> None:
-        """Export the feature catalog to a JSON file."""
-        catalog = self.catalog()
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(catalog, f, indent=2)
-        logger.info("Feature catalog exported to %s", path)
+    def catalog(self) -> pd.DataFrame:
+        """Return a DataFrame describing all registered features."""
+        return pd.DataFrame([
+            {
+                "name": f.name,
+                "description": f.description,
+                "dtype": f.dtype,
+                "version": f.version,
+                "tags": ", ".join(f.tags),
+                "dependencies": ", ".join(f.dependencies),
+            }
+            for f in self._registry.values()
+        ])
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _resolve_dependency_order(
+        self, features: list[FeatureDefinition]
+    ) -> list[FeatureDefinition]:
+        """Topological sort so dependencies are computed before dependents."""
+        name_to_feat = {f.name: f for f in features}
+        order: list[FeatureDefinition] = []
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visited:
+                return
+            visited.add(name)
+            feat = name_to_feat.get(name)
+            if feat is None:
+                return
+            for dep in feat.dependencies:
+                visit(dep)
+            order.append(feat)
+
+        for f in features:
+            visit(f.name)
+        return order
