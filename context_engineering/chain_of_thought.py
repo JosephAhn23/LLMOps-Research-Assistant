@@ -1,314 +1,203 @@
 """
-Chain-of-thought prompting strategies.
+context_engineering/chain_of_thought.py
+-----------------------------------------
+Structured Chain-of-Thought (CoT) prompt construction.
 
-Implements:
-  - Zero-shot CoT: "Let's think step by step."
-  - Few-shot CoT: examples with explicit reasoning chains
-  - Self-consistency: sample N reasoning paths, majority-vote the answer
-  - Tree-of-Thought (ToT): breadth-first search over reasoning branches
-  - Scratchpad: structured intermediate computation space
-
-Usage:
-    cot = ChainOfThought(strategy="self_consistency", n_samples=5)
-    result = cot.run(query, context, llm_fn=my_llm)
-    print(result.answer, result.confidence)
+Supports:
+  - Zero-shot CoT ("Let's think step by step")
+  - Few-shot CoT (examples with reasoning traces)
+  - Self-consistency prompting (multiple reasoning paths)
+  - Tree-of-Thought (ToT) branching prompts
+  - Scratchpad prompting for retrieval-augmented reasoning
 """
 
 from __future__ import annotations
 
-import logging
-import re
-from collections import Counter
+import textwrap
 from dataclasses import dataclass, field
-from typing import Callable, Literal
-
-logger = logging.getLogger(__name__)
-
-LLMFn = Callable[[str], str]
+from typing import Literal
 
 
 @dataclass
+class CoTExample:
+    question: str
+    reasoning: str
+    answer: str
+
+    def format(self, numbered: bool = False, step_prefix: str = "Step") -> str:
+        steps = [s.strip() for s in self.reasoning.split("\n") if s.strip()]
+        if numbered:
+            reasoning_str = "\n".join(
+                f"{step_prefix} {i + 1}: {s}" for i, s in enumerate(steps)
+            )
+        else:
+            reasoning_str = "\n".join(steps)
+        return f"Q: {self.question}\nReasoning:\n{reasoning_str}\nA: {self.answer}"
+
+
+@dataclass
+class ChainOfThoughtConfig:
+    strategy: Literal["zero_shot", "few_shot", "self_consistency", "tot", "scratchpad"] = "few_shot"
+    examples: list[CoTExample] = field(default_factory=list)
+    n_paths: int = 3                 # for self_consistency / tot
+    numbered_steps: bool = True
+    step_prefix: str = "Step"
+    system_instruction: str = (
+        "You are a precise and rigorous reasoning assistant. "
+        "Always show your work before giving the final answer."
+    )
+
+
+# Legacy alias so existing imports of CoTResult don't break
+@dataclass
 class CoTResult:
     strategy: str
-    query: str
-    answer: str
-    reasoning: str
-    confidence: float
-    all_samples: list[str] = field(default_factory=list)
-    token_cost: int = 0
+    prompt: str
 
     def summary(self) -> str:
-        return (
-            f"CoT ({self.strategy})\n"
-            f"  Answer:     {self.answer[:100]}\n"
-            f"  Confidence: {self.confidence:.2f}\n"
-            f"  Reasoning:  {self.reasoning[:200]}...\n"
-            f"  Samples:    {len(self.all_samples)}"
-        )
-
-
-# ── Prompt templates ──────────────────────────────────────────────────────────
-
-ZERO_SHOT_COT_TEMPLATE = """{context}
-
-Question: {query}
-
-Let's think step by step.
-"""
-
-FEW_SHOT_COT_TEMPLATE = """{examples}
-
-Context: {context}
-
-Question: {query}
-
-Let's think step by step.
-"""
-
-SELF_CONSISTENCY_TEMPLATE = """{context}
-
-Question: {query}
-
-Think through this carefully, then give your final answer on a line starting with "Answer:".
-"""
-
-TOT_BRANCH_TEMPLATE = """Context: {context}
-
-Question: {query}
-
-Reasoning branch {branch_id}: {branch_hint}
-
-Continue this reasoning and provide a partial answer:
-"""
-
-SCRATCHPAD_TEMPLATE = """Context: {context}
-
-Question: {query}
-
-Use the scratchpad below to work through the problem step by step.
-<scratchpad>
-{scratchpad}
-</scratchpad>
-
-Based on your scratchpad, provide the final answer:
-"""
-
-
-def _extract_answer(text: str) -> str:
-    """Extract the answer from a CoT response."""
-    # Look for "Answer: ..." pattern
-    match = re.search(r"(?:Answer|Therefore|Thus|So)[:\s]+(.+?)(?:\n|$)", text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    # Fall back to last sentence
-    sentences = [s.strip() for s in text.split(".") if s.strip()]
-    return sentences[-1] if sentences else text.strip()
-
-
-def _majority_vote(answers: list[str]) -> tuple[str, float]:
-    """Return the most common answer and its fraction."""
-    if not answers:
-        return "", 0.0
-    counts = Counter(answers)
-    best, count = counts.most_common(1)[0]
-    return best, count / len(answers)
+        return f"CoT ({self.strategy}): {len(self.prompt)} chars"
 
 
 class ChainOfThoughtBuilder:
     """
-    Chain-of-thought prompting with multiple strategies.
+    Builds Chain-of-Thought prompts for the LLMOps pipeline.
 
-    Parameters
-    ----------
-    strategy : str
-        "zero_shot" | "few_shot" | "self_consistency" | "tree_of_thought" | "scratchpad"
-    n_samples : int
-        Number of samples for self-consistency (ignored for other strategies).
-    n_branches : int
-        Number of branches for tree-of-thought.
-    examples : list[dict] | None
-        Few-shot examples with keys "question", "reasoning", "answer".
+    Example
+    -------
+    >>> builder = ChainOfThoughtBuilder()
+    >>> prompt = builder.build(
+    ...     query="Why does FAISS use IVF indexing?",
+    ...     context="FAISS supports exact and approximate search...",
+    ...     strategy="zero_shot",
+    ... )
     """
 
-    def __init__(
-        self,
-        strategy: Literal[
-            "zero_shot", "few_shot", "self_consistency", "tree_of_thought", "scratchpad"
-        ] = "zero_shot",
-        n_samples: int = 5,
-        n_branches: int = 3,
-        examples: list[dict] | None = None,
-    ) -> None:
-        self.strategy = strategy
-        self.n_samples = n_samples
-        self.n_branches = n_branches
-        self.examples = examples or []
+    def __init__(self, config: ChainOfThoughtConfig | None = None):
+        self.config = config or ChainOfThoughtConfig()
 
-    def run(
+    def build(
         self,
         query: str,
         context: str = "",
-        llm_fn: LLMFn | None = None,
-    ) -> CoTResult:
-        """
-        Run the selected CoT strategy.
-
-        Parameters
-        ----------
-        query : str
-            The user question.
-        context : str
-            Retrieved context to ground the answer.
-        llm_fn : callable | None
-            Function that takes a prompt string and returns a completion string.
-            If None, returns a mock result (for testing).
-        """
-        if llm_fn is None:
-            llm_fn = self._mock_llm
-
-        dispatch = {
+        strategy: str | None = None,
+    ) -> str:
+        strategy = strategy or self.config.strategy
+        builders = {
             "zero_shot": self._zero_shot,
             "few_shot": self._few_shot,
             "self_consistency": self._self_consistency,
-            "tree_of_thought": self._tree_of_thought,
+            "tot": self._tree_of_thought,
             "scratchpad": self._scratchpad,
         }
-        fn = dispatch.get(self.strategy, self._zero_shot)
-        return fn(query, context, llm_fn)
+        if strategy not in builders:
+            raise ValueError(f"Unknown strategy '{strategy}'. Choose from: {list(builders)}")
+        return builders[strategy](query, context)
 
-    def _zero_shot(self, query: str, context: str, llm_fn: LLMFn) -> CoTResult:
-        prompt = ZERO_SHOT_COT_TEMPLATE.format(context=context, query=query)
-        response = llm_fn(prompt)
-        answer = _extract_answer(response)
-        return CoTResult(
-            strategy="zero_shot",
-            query=query,
-            answer=answer,
-            reasoning=response,
-            confidence=0.7,
-            all_samples=[response],
-            token_cost=len(prompt.split()) + len(response.split()),
-        )
+    # ------------------------------------------------------------------
+    # Strategies
+    # ------------------------------------------------------------------
 
-    def _few_shot(self, query: str, context: str, llm_fn: LLMFn) -> CoTResult:
-        examples_str = "\n\n".join(
-            f"Q: {e['question']}\nReasoning: {e.get('reasoning', '')}\nA: {e['answer']}"
-            for e in self.examples
+    def _zero_shot(self, query: str, context: str) -> str:
+        parts = [self.config.system_instruction]
+        if context:
+            parts.append(f"\nContext:\n{context}")
+        parts.append(
+            f"\nQuestion: {query}\n\nLet's think through this step by step:"
         )
-        prompt = FEW_SHOT_COT_TEMPLATE.format(
-            examples=examples_str, context=context, query=query
-        )
-        response = llm_fn(prompt)
-        answer = _extract_answer(response)
-        return CoTResult(
-            strategy="few_shot",
-            query=query,
-            answer=answer,
-            reasoning=response,
-            confidence=0.8,
-            all_samples=[response],
-            token_cost=len(prompt.split()) + len(response.split()),
-        )
+        return "\n".join(parts)
 
-    def _self_consistency(self, query: str, context: str, llm_fn: LLMFn) -> CoTResult:
+    def _few_shot(self, query: str, context: str) -> str:
+        parts = [self.config.system_instruction, ""]
+        for ex in self.config.examples:
+            parts.append(ex.format(
+                numbered=self.config.numbered_steps,
+                step_prefix=self.config.step_prefix,
+            ))
+            parts.append("")
+
+        if context:
+            parts.append(f"Context:\n{context}\n")
+        parts.append(f"Q: {query}\nReasoning:")
+        return "\n".join(parts)
+
+    def _self_consistency(self, query: str, context: str) -> str:
         """
-        Sample N independent reasoning paths, then majority-vote the final answer.
-        Reduces variance from single-sample CoT.
+        Prompts the model to generate N independent reasoning paths.
+        The caller should call the LLM n_paths times and take majority vote.
         """
-        prompt = SELF_CONSISTENCY_TEMPLATE.format(context=context, query=query)
-        responses = [llm_fn(prompt) for _ in range(self.n_samples)]
-        answers = [_extract_answer(r) for r in responses]
-        best_answer, confidence = _majority_vote(answers)
+        base = self._zero_shot(query, context)
+        suffix = textwrap.dedent(f"""
 
-        logger.debug(
-            "Self-consistency: %d samples, majority answer confidence=%.2f",
-            self.n_samples, confidence,
-        )
+            Generate {self.config.n_paths} independent reasoning paths to this question,
+            then choose the most consistent answer across paths.
+            Format each path as:
+            Path 1: <reasoning> -> Answer: <answer>
+            Path 2: <reasoning> -> Answer: <answer>
+            ...
+            Final Answer (most consistent): <answer>
+        """)
+        return base + suffix
 
-        return CoTResult(
-            strategy="self_consistency",
-            query=query,
-            answer=best_answer,
-            reasoning=responses[0],
-            confidence=confidence,
-            all_samples=responses,
-            token_cost=self.n_samples * (len(prompt.split()) + 50),
-        )
+    def _tree_of_thought(self, query: str, context: str) -> str:
+        """Tree-of-Thought: branch -> evaluate -> select best branch."""
+        parts = [
+            self.config.system_instruction,
+            "",
+            "Use Tree-of-Thought reasoning:",
+            f"  1. Generate {self.config.n_paths} possible approaches to the problem.",
+            "  2. Evaluate each approach for correctness and completeness.",
+            "  3. Select the best approach and elaborate it fully.",
+            "",
+        ]
+        if context:
+            parts.append(f"Context:\n{context}\n")
+        parts.append(f"Question: {query}\n")
+        parts.append("Branches:")
+        for i in range(1, self.config.n_paths + 1):
+            parts.append(f"  Branch {i}: [explore approach {i}]")
+        parts.append("\nEvaluation:")
+        parts.append("Best Branch: [select and elaborate]")
+        return "\n".join(parts)
 
-    def _tree_of_thought(self, query: str, context: str, llm_fn: LLMFn) -> CoTResult:
+    def _scratchpad(self, query: str, context: str) -> str:
         """
-        Breadth-first search over reasoning branches.
-        Each branch explores a different reasoning direction; the best-scoring
-        branch (by answer consistency) is selected.
+        Scratchpad prompting for retrieval-augmented reasoning.
+        The model writes intermediate notes before the final answer.
         """
-        branch_hints = [
-            "Focus on the factual claims in the context.",
-            "Consider what information might be missing.",
-            "Think about potential counterarguments.",
-        ][: self.n_branches]
+        parts = [
+            self.config.system_instruction,
+            "",
+            "You have access to retrieved context. Use a scratchpad to:",
+            "  1. Note relevant facts from the context",
+            "  2. Identify gaps or contradictions",
+            "  3. Reason through the question",
+            "  4. State your final answer",
+            "",
+        ]
+        if context:
+            parts.append(f"<context>\n{context}\n</context>\n")
+        parts.append(f"<question>{query}</question>\n")
+        parts.append("<scratchpad>")
+        parts.append("Relevant facts:")
+        parts.append("Gaps/contradictions:")
+        parts.append("Reasoning:")
+        parts.append("</scratchpad>")
+        parts.append("<answer>")
+        return "\n".join(parts)
 
-        branch_responses = []
-        for i, hint in enumerate(branch_hints):
-            prompt = TOT_BRANCH_TEMPLATE.format(
-                context=context, query=query, branch_id=i + 1, branch_hint=hint
-            )
-            branch_responses.append(llm_fn(prompt))
+    # ------------------------------------------------------------------
+    # Convenience builders
+    # ------------------------------------------------------------------
 
-        answers = [_extract_answer(r) for r in branch_responses]
-        best_answer, confidence = _majority_vote(answers)
-
-        # Select the branch whose answer matches the majority
-        best_reasoning = branch_responses[0]
-        for r, a in zip(branch_responses, answers):
-            if a == best_answer:
-                best_reasoning = r
-                break
-
-        return CoTResult(
-            strategy="tree_of_thought",
-            query=query,
-            answer=best_answer,
-            reasoning=best_reasoning,
-            confidence=confidence,
-            all_samples=branch_responses,
-            token_cost=self.n_branches * 100,
+    @classmethod
+    def rag_scratchpad(cls, query: str, chunks: list[str]) -> str:
+        """Build a RAG-optimised scratchpad prompt from retrieved chunks."""
+        context = "\n\n---\n\n".join(
+            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(chunks)
         )
+        builder = cls(ChainOfThoughtConfig(strategy="scratchpad"))
+        return builder.build(query, context=context)
 
-    def _scratchpad(self, query: str, context: str, llm_fn: LLMFn) -> CoTResult:
-        """
-        Two-pass: first generate a scratchpad, then use it to produce the answer.
-        Useful for multi-step arithmetic or structured reasoning.
-        """
-        # Pass 1: generate scratchpad
-        scratchpad_prompt = (
-            f"Context: {context}\n\nQuestion: {query}\n\n"
-            "Write a step-by-step scratchpad working through the problem:"
-        )
-        scratchpad = llm_fn(scratchpad_prompt)
-
-        # Pass 2: use scratchpad to answer
-        answer_prompt = SCRATCHPAD_TEMPLATE.format(
-            context=context, query=query, scratchpad=scratchpad
-        )
-        response = llm_fn(answer_prompt)
-        answer = _extract_answer(response)
-
-        return CoTResult(
-            strategy="scratchpad",
-            query=query,
-            answer=answer,
-            reasoning=f"Scratchpad:\n{scratchpad}\n\nFinal:\n{response}",
-            confidence=0.75,
-            all_samples=[scratchpad, response],
-            token_cost=len(scratchpad_prompt.split()) + len(answer_prompt.split()) + 100,
-        )
-
-    @staticmethod
-    def _mock_llm(prompt: str) -> str:
-        """Mock LLM for testing without an API key."""
-        return (
-            "Step 1: Analyze the question.\n"
-            "Step 2: Review the context.\n"
-            "Step 3: Synthesize an answer.\n"
-            "Answer: This is a mock response for testing."
-        )
+    @classmethod
+    def zero_shot_cot(cls, query: str, context: str = "") -> str:
+        return cls().build(query, context=context, strategy="zero_shot")
