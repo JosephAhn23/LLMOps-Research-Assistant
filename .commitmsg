@@ -1,7 +1,0 @@
-Add deployment status clarity and methodology notes to README
-
-- Clarify what runs locally vs. requires AWS/GPU/cluster
-- Add status column to capabilities table
-- Add notes column to performance table with measurement context
-- Add RAGAS methodology note
-- Fix CloudWatch claim to "implemented; requires AWS deployment"

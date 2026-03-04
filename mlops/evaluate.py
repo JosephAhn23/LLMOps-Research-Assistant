@@ -9,6 +9,8 @@ import math
 import time
 from typing import Dict, List
 
+import numpy as np
+
 from datasets import Dataset
 from ragas import evaluate
 from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
@@ -56,10 +58,14 @@ def evaluate_pipeline(test_cases: List[Dict]) -> Dict:
             f"RAGAS evaluation failed after {_MAX_RETRIES} retries"
         ) from last_exc
 
-    raw_scores: Dict[str, float] = results.to_pandas().mean().to_dict()
+    raw_scores: Dict[str, float] = {
+        k: float(v)
+        for k, v in results.to_pandas().mean().items()
+        if isinstance(v, (float, np.floating))
+    }
 
     # Filter out NaN values — mlflow.log_metrics raises on NaN.
-    scores = {k: v for k, v in raw_scores.items() if isinstance(v, float) and not math.isnan(v)}
+    scores = {k: v for k, v in raw_scores.items() if not math.isnan(v)}
 
     if not scores:
         logger.warning("All RAGAS scores are NaN — check that your dataset is valid.")

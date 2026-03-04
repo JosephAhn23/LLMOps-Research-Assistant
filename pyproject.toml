@@ -145,6 +145,18 @@ tokenization = [
     "tokenizers>=0.19.0",
 ]
 
+# Recommendation system (learn-to-rank, SHAP)
+recsys = [
+    "lightgbm>=4.3.0",
+    "shap>=0.45.0",
+    "scikit-learn>=1.5.0",
+]
+
+# Causal inference
+causal = [
+    "numpy>=1.26.0",
+]
+
 # Dev tools
 dev = [
     "pytest>=8.2.0",
@@ -158,7 +170,7 @@ dev = [
 
 # All optional deps (for full dev environment)
 all = [
-    "llmops-research-assistant[gpu,local,spark,streaming,azure,ui,inference,multimodal,ml,rl,tokenization,dev]",
+    "llmops-research-assistant[gpu,local,spark,streaming,azure,ui,inference,multimodal,ml,rl,tokenization,recsys,causal,dev]",
 ]
 
 # ── CLI entry points ───────────────────────────────────────────────────────────
@@ -173,10 +185,10 @@ llmops-config   = "config.hydra_config:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-    "agents", "analysis", "api", "cicd", "compile", "config", "cuda_ext",
-    "eval", "experiments", "finetune", "inference", "ingestion", "interpretability",
+    "agents", "analysis", "api", "causal", "cicd", "compile", "config", "context_engineering",
+    "cuda_ext", "eval", "experiments", "finetune", "inference", "ingestion", "interpretability",
     "mcp_server", "microservices", "mlops", "monitoring",
-    "multimodal", "observability", "rl", "safety",
+    "multimodal", "observability", "recsys", "rl", "safety",
     "sandbox", "spark_ml", "streaming", "tokenization",
 ]
 

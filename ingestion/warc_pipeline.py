@@ -5,6 +5,7 @@ Covers: Large-scale web datasets (real depth, not just load_dataset)
 import gzip
 import hashlib
 import io
+import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed

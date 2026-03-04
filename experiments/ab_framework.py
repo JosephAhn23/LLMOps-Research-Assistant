@@ -103,8 +103,8 @@ class ABExperiment:
         try:
             hash_val = int(uuid.UUID(user_id).int % 10000) / 10000
         except ValueError:
-            # user_id is not a UUID — fall back to MD5 hash for stable assignment.
-            hash_val = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % 10000 / 10000
+            # user_id is not a UUID — fall back to SHA-256 for stable assignment.
+            hash_val = int(hashlib.sha256(user_id.encode()).hexdigest(), 16) % 10000 / 10000
 
         cumulative = 0.0
         assigned_variant = list(self.variants.values())[-1]

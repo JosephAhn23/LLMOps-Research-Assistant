@@ -127,12 +127,19 @@ class AttackEmbeddingLibrary:
         self.benign_embeddings = self.embedder.embed(benign_texts)
         Path("safety").mkdir(exist_ok=True)
         np.save("safety/attack_embeddings.npy", self.attack_embeddings)
-        np.save("safety/attack_texts.npy", np.array(attack_texts))
+        # Store texts as JSON — never use allow_pickle=True on untrusted files.
+        import json as _json
+        Path("safety/attack_texts.json").write_text(
+            _json.dumps(attack_texts), encoding="utf-8"
+        )
         np.save("safety/benign_embeddings.npy", self.benign_embeddings)
 
     def load(self):
+        import json as _json
         self.attack_embeddings = np.load("safety/attack_embeddings.npy")
-        self.attack_texts = np.load("safety/attack_texts.npy", allow_pickle=True).tolist()
+        self.attack_texts = _json.loads(
+            Path("safety/attack_texts.json").read_text(encoding="utf-8")
+        )
         self.benign_embeddings = np.load("safety/benign_embeddings.npy")
 
     def add_attack(self, text: str):

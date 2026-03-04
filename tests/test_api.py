@@ -78,14 +78,17 @@ class TestRealtimeEndpoint:
 
 class TestBatchEndpoint:
     def test_batch_endpoint_returns_job_id(self, client):
-        # Patch where the function is *used* (api.main imports it at call time),
+        # Patch where the function is *used* (api.main imports it at module level),
         # not where it is defined, so the mock is actually applied.
-        with patch("api.main.enqueue_batch_job"):
+        with patch("api.main.enqueue_batch_job") as mock_enqueue:
             response = client.post("/batch", json={"queries": ["q1", "q2"]})
         assert response.status_code == 200
         data = response.json()
         assert "job_id" in data
         assert data["status"] == "queued"
+        mock_enqueue.assert_called_once()
+        _job_id, queries = mock_enqueue.call_args[0]
+        assert queries == ["q1", "q2"]
 
     def test_batch_status_not_found_returns_404(self, client):
         with patch("api.batch.get_job_status", return_value={"error": "job not found"}):

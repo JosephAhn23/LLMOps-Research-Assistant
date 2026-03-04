@@ -271,20 +271,21 @@ class SageMakerModelRegistry:
         raise TimeoutError(f"Endpoint {endpoint_name} did not become InService in {timeout}s")
 
     def list_model_versions(self) -> list:
-        """List all registered model versions with approval status."""
-        response = self.sm_client.list_model_packages(
+        """List all registered model versions with approval status (paginated)."""
+        paginator = self.sm_client.get_paginator("list_model_packages")
+        versions = []
+        for page in paginator.paginate(
             ModelPackageGroupName=MODEL_PACKAGE_GROUP,
             SortBy="CreationTime",
             SortOrder="Descending",
-        )
-        versions = []
-        for pkg in response["ModelPackageSummaryList"]:
-            versions.append(
-                {
-                    "arn": pkg["ModelPackageArn"],
-                    "version": pkg["ModelPackageVersion"],
-                    "status": pkg["ModelApprovalStatus"],
-                    "created": pkg["CreationTime"].isoformat(),
-                }
-            )
+        ):
+            for pkg in page["ModelPackageSummaryList"]:
+                versions.append(
+                    {
+                        "arn": pkg["ModelPackageArn"],
+                        "version": pkg["ModelPackageVersion"],
+                        "status": pkg["ModelApprovalStatus"],
+                        "created": pkg["CreationTime"].isoformat(),
+                    }
+                )
         return versions

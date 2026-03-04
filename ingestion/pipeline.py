@@ -121,6 +121,9 @@ class IngestionPipeline:
 
         import faiss
 
+        # Hold the lock for the entire read → deduplicate → embed → write
+        # sequence to prevent concurrent ingest calls from racing on the same
+        # chunk_ids and producing duplicate vectors in the FAISS index.
         with _index_lock:
             if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
                 # Append to the existing index so prior documents are preserved.
@@ -140,19 +143,17 @@ class IngestionPipeline:
             if not new_pairs:
                 logger.info("All chunks already indexed — skipping.")
                 return
-            all_chunks, all_meta = zip(*new_pairs)
+            dedup_chunks, dedup_meta = zip(*new_pairs)
 
-        logger.info("Embedding %d new chunks...", len(all_chunks))
-        embeddings = self.embedder.embed(list(all_chunks))
+            logger.info("Embedding %d new chunks...", len(dedup_chunks))
+            embeddings = self.embedder.embed(list(dedup_chunks))
+            dim = embeddings.shape[1]
 
-        dim = embeddings.shape[1]
-
-        with _index_lock:
             if self.index is None:
                 self.index = faiss.IndexFlatIP(dim)  # inner product = cosine on normalized vecs
 
             self.index.add(embeddings)
-            self.metadata = existing_meta + list(all_meta)
+            self.metadata = existing_meta + list(dedup_meta)
 
             faiss.write_index(self.index, INDEX_PATH)
             with open(META_PATH, "w", encoding="utf-8") as f:

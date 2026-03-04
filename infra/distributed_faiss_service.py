@@ -14,7 +14,7 @@ from typing import Dict, List
 import faiss
 import httpx
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from ingestion.pipeline import EmbeddingModel
@@ -69,6 +69,11 @@ class ShardSearchResult(BaseModel):
 
 @shard_app.post("/search", response_model=ShardSearchResult)
 def search_shard(request: ShardSearchRequest):
+    if shard_index is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Shard {SHARD_ID} index not loaded — startup may have failed.",
+        )
     query = np.array([request.query_vector], dtype=np.float32)
     scores, indices = shard_index.search(query, request.top_k)
 

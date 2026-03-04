@@ -26,7 +26,10 @@ def track_pipeline(func: Callable) -> Callable:
     @wraps(func)
     def wrapper(*args, **kwargs):
         _ensure_experiment()
-        with mlflow.start_run(nested=mlflow.active_run() is not None):
+        with mlflow.start_run(
+            run_name=func.__name__,
+            nested=mlflow.active_run() is not None,
+        ):
             start = time.time()
             result = func(*args, **kwargs)
             latency = time.time() - start

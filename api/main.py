@@ -137,9 +137,9 @@ async def query_realtime(request: QueryRequest):
 @app.post("/batch", dependencies=[Security(_require_api_key)])
 async def query_batch(request: BatchRequest, background_tasks: BackgroundTasks):
     job_id = str(uuid.uuid4())
-    # enqueue_batch_job performs synchronous Redis + Celery I/O; run it in a
-    # thread so it does not block the async event loop.
-    background_tasks.add_task(asyncio.to_thread, enqueue_batch_job, job_id, request.queries)
+    # BackgroundTasks runs sync callables in a thread pool automatically,
+    # so enqueue_batch_job (which does blocking Redis + Celery I/O) is safe here.
+    background_tasks.add_task(enqueue_batch_job, job_id, request.queries)
     return {"job_id": job_id, "status": "queued"}
 
 

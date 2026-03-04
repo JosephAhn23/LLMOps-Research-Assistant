@@ -4,6 +4,7 @@ Covers: WebSockets, real-time applications
 """
 import asyncio
 import json
+import os
 import time
 import uuid
 from typing import AsyncIterator, Dict, Optional
@@ -170,10 +171,21 @@ async def websocket_batch_progress(websocket: WebSocket):
 
         from api.batch import get_job_status
 
+        _MAX_POLL_S = float(os.getenv("BATCH_PROGRESS_TIMEOUT_S", "300"))
+        deadline = asyncio.get_event_loop().time() + _MAX_POLL_S
+
         while True:
             status = get_job_status(job_id)
+            if status.get("error"):
+                await manager.send(conn_id, {"type": "error", "message": status["error"]})
+                break
             await manager.send(conn_id, {"type": "progress", **status})
             if status.get("status") in ["completed", "failed"]:
+                break
+            if asyncio.get_event_loop().time() >= deadline:
+                await manager.send(
+                    conn_id, {"type": "error", "message": "polling timeout — job may be stuck"}
+                )
                 break
             await asyncio.sleep(0.5)
 
