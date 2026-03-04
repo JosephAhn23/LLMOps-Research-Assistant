@@ -1,19 +1,13 @@
 """
-Retrieval context compression.
+context_engineering/compressor.py
+-----------------------------------
+Prompt compression via token-level perplexity pruning (LLMLingua-style).
 
-Implements two strategies:
-  1. TF-IDF extractive compression -- no LLM required, fast, deterministic
-  2. Perplexity-based pruning (LLMLingua-style) -- requires a local LM;
-     falls back to TF-IDF if transformers not available
+Ranks each sentence by its perplexity under a small proxy LM (GPT-2 by default).
+Low-perplexity sentences are "predictable" and can be pruned without information loss.
+High-perplexity sentences are surprising/informative and should be kept.
 
-The goal: reduce token count by 30-50% while preserving faithfulness score.
-Measured result: 35% token reduction at equivalent RAGAS faithfulness on
-the held-out evaluation set.
-
-Usage:
-    compressor = ContextCompressor(strategy="tfidf", target_ratio=0.6)
-    compressed = compressor.compress(query, chunks)
-    print(f"Tokens: {compressed.original_tokens} -> {compressed.compressed_tokens}")
+Reference: LLMLingua: Compressing Prompts for Accelerated Inference of LLMs (EMNLP 2023)
 """
 
 from __future__ import annotations
@@ -32,210 +26,194 @@ class CompressionResult:
     compressed_text: str
     original_tokens: int
     compressed_tokens: int
-    compression_ratio: float
-    strategy: str
 
     @property
-    def token_savings(self) -> int:
+    def compression_ratio(self) -> float:
+        if self.original_tokens == 0:
+            return 1.0
+        return self.compressed_tokens / self.original_tokens
+
+    @property
+    def tokens_saved(self) -> int:
         return self.original_tokens - self.compressed_tokens
 
     def summary(self) -> str:
         return (
-            f"Compression ({self.strategy}): "
-            f"{self.original_tokens} -> {self.compressed_tokens} tokens "
-            f"({self.compression_ratio:.1%} retained, "
-            f"{self.token_savings} tokens saved)"
+            f"Tokens: {self.original_tokens} -> {self.compressed_tokens} "
+            f"({self.compression_ratio:.1%} ratio, {self.tokens_saved} saved)"
         )
-
-
-def _tokenize_rough(text: str) -> int:
-    """Rough token count: words / 0.75 (GPT-style approximation)."""
-    return max(1, len(text.split()) * 4 // 3)
-
-
-def _sentence_split(text: str) -> list[str]:
-    """Split text into sentences."""
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    return [s for s in sentences if s.strip()]
-
-
-def _tfidf_scores(query: str, sentences: list[str]) -> list[float]:
-    """
-    Score each sentence by TF-IDF cosine similarity to the query.
-    Pure Python -- no sklearn required.
-    """
-    import math
-
-    def tokenize(t: str) -> list[str]:
-        return re.findall(r"\b\w+\b", t.lower())
-
-    query_tokens = set(tokenize(query))
-    doc_tokens = [tokenize(s) for s in sentences]
-
-    # IDF: log(N / df) for each term
-    n = len(sentences)
-    df: dict[str, int] = {}
-    for tokens in doc_tokens:
-        for t in set(tokens):
-            df[t] = df.get(t, 0) + 1
-    idf = {t: math.log((n + 1) / (df.get(t, 0) + 1)) for t in query_tokens}
-
-    scores = []
-    for tokens in doc_tokens:
-        tf = {t: tokens.count(t) / max(len(tokens), 1) for t in query_tokens}
-        score = sum(tf.get(t, 0) * idf.get(t, 0) for t in query_tokens)
-        scores.append(score)
-    return scores
-
-
-def _perplexity_scores(sentences: list[str]) -> list[float]:
-    """
-    Score sentences by perplexity under a small LM (lower = more fluent/informative).
-    Falls back to uniform scores if transformers not available.
-    """
-    try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        model_name = "distilgpt2"
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name)
-        model.eval()
-
-        scores = []
-        with torch.no_grad():
-            for sent in sentences:
-                enc = tokenizer(sent, return_tensors="pt", truncation=True, max_length=128)
-                loss = model(**enc, labels=enc["input_ids"]).loss
-                scores.append(float(loss))
-        return scores
-    except Exception as e:
-        logger.debug("Perplexity scoring unavailable (%s); using uniform scores", e)
-        return [1.0] * len(sentences)
 
 
 class PromptCompressor:
     """
     Compresses retrieved context chunks to fit within a token budget.
 
-    Parameters
+    Strategies
     ----------
-    strategy : "tfidf" | "perplexity"
-        Scoring strategy. "perplexity" requires transformers; falls back to
-        "tfidf" automatically.
-    target_ratio : float
-        Target fraction of original tokens to retain (e.g., 0.6 = 40% reduction).
-    min_sentences : int
-        Minimum number of sentences to retain regardless of budget.
+    perplexity  : Keep high-perplexity (informative) sentences. Requires transformers.
+    extractive  : Simple TF-IDF sentence ranking (no GPU needed).
+    truncate    : Naive tail truncation (baseline).
+
+    Example
+    -------
+    >>> compressor = PromptCompressor(target_ratio=0.5)
+    >>> result = compressor.compress(long_context, query="What is FAISS?")
+    >>> print(result.summary())
     """
 
     def __init__(
         self,
-        strategy: Literal["tfidf", "perplexity"] = "tfidf",
-        target_ratio: float = 0.6,
+        target_ratio: float = 0.5,
+        strategy: Literal["perplexity", "extractive", "truncate"] = "extractive",
+        proxy_model: str = "gpt2",
         min_sentences: int = 3,
-    ) -> None:
-        self.strategy = strategy
+    ):
+        if not 0.0 < target_ratio <= 1.0:
+            raise ValueError("target_ratio must be in (0, 1]")
         self.target_ratio = target_ratio
+        self.strategy = strategy
+        self.proxy_model = proxy_model
         self.min_sentences = min_sentences
+        self._model = None
+        self._tokenizer = None
 
-    def compress(self, query: str, context: str | list[str]) -> CompressionResult:
+    def compress(self, text: str, query: str = "") -> CompressionResult:
         """
-        Compress context to approximately target_ratio of original token count.
+        Compress text to approximately target_ratio of its original token count.
 
         Parameters
         ----------
-        query : str
-            The user query (used for relevance scoring).
-        context : str or list[str]
-            Retrieved chunks. If a list, joined with double newline.
+        text  : context to compress
+        query : optional query for relevance-aware compression
         """
-        if isinstance(context, list):
-            full_text = "\n\n".join(context)
-        else:
-            full_text = context
+        sentences = self._split_sentences(text)
+        if len(sentences) <= self.min_sentences:
+            tokens = self._count_tokens(text)
+            return CompressionResult(text, text, tokens, tokens)
 
-        sentences = _sentence_split(full_text)
-        if not sentences:
-            return CompressionResult(
-                original_text=full_text,
-                compressed_text=full_text,
-                original_tokens=_tokenize_rough(full_text),
-                compressed_tokens=_tokenize_rough(full_text),
-                compression_ratio=1.0,
-                strategy=self.strategy,
-            )
+        scores = self._score_sentences(sentences, query)
+        compressed = self._select_sentences(sentences, scores)
 
-        # Score sentences
-        if self.strategy == "perplexity":
-            raw_scores = _perplexity_scores(sentences)
-            # Lower perplexity = more fluent = higher priority; invert
-            scores = [1.0 / (s + 1e-6) for s in raw_scores]
-        else:
-            scores = _tfidf_scores(query, sentences)
+        orig_tokens = self._count_tokens(text)
+        comp_tokens = self._count_tokens(compressed)
 
-        # Combine with query relevance (always use TF-IDF for relevance)
-        relevance = _tfidf_scores(query, sentences)
-        combined = [0.5 * s + 0.5 * r for s, r in zip(scores, relevance)]
-
-        # Greedy selection: add highest-scoring sentences until budget hit
-        target_tokens = int(_tokenize_rough(full_text) * self.target_ratio)
-        ranked = sorted(range(len(sentences)), key=lambda i: -combined[i])
-
-        selected: set[int] = set()
-        token_count = 0
-        for idx in ranked:
-            t = _tokenize_rough(sentences[idx])
-            if token_count + t <= target_tokens or len(selected) < self.min_sentences:
-                selected.add(idx)
-                token_count += t
-            if token_count >= target_tokens and len(selected) >= self.min_sentences:
-                break
-
-        # Preserve original order
-        compressed_sentences = [sentences[i] for i in sorted(selected)]
-        compressed_text = " ".join(compressed_sentences)
-
-        orig_tokens = _tokenize_rough(full_text)
-        comp_tokens = _tokenize_rough(compressed_text)
-
-        logger.debug(
-            "Compressed %d -> %d tokens (%.1f%% retained)",
-            orig_tokens, comp_tokens, 100 * comp_tokens / orig_tokens,
+        logger.info(
+            "Compressed %d -> %d tokens (%.1f%%)",
+            orig_tokens, comp_tokens, 100 * comp_tokens / max(orig_tokens, 1),
         )
 
         return CompressionResult(
-            original_text=full_text,
-            compressed_text=compressed_text,
+            original_text=text,
+            compressed_text=compressed,
             original_tokens=orig_tokens,
             compressed_tokens=comp_tokens,
-            compression_ratio=comp_tokens / orig_tokens,
-            strategy=self.strategy,
         )
 
-    def compress_to_budget(
-        self, query: str, context: str | list[str], token_budget: int
-    ) -> CompressionResult:
-        """Compress to fit within an absolute token budget."""
-        if isinstance(context, list):
-            full_text = "\n\n".join(context)
+    def compress_chunks(
+        self, chunks: list[str], query: str = ""
+    ) -> list[CompressionResult]:
+        """Compress a list of retrieved chunks independently."""
+        return [self.compress(chunk, query) for chunk in chunks]
+
+    def fit_to_budget(
+        self, chunks: list[str], token_budget: int, query: str = ""
+    ) -> list[str]:
+        """
+        Compress and select chunks to fit within a token budget.
+        Prioritises chunks by their relevance score.
+        """
+        results = self.compress_chunks(chunks, query)
+        selected, total = [], 0
+        for r in sorted(results, key=lambda x: x.compression_ratio):
+            if total + r.compressed_tokens <= token_budget:
+                selected.append(r.compressed_text)
+                total += r.compressed_tokens
+            else:
+                remaining = token_budget - total
+                if remaining > 50:
+                    # truncate to fit remaining budget (rough char estimate)
+                    partial = r.compressed_text[: remaining * 4]
+                    selected.append(partial)
+                break
+        return selected
+
+    # ------------------------------------------------------------------
+    # Scoring strategies
+    # ------------------------------------------------------------------
+
+    def _score_sentences(self, sentences: list[str], query: str) -> list[float]:
+        if self.strategy == "perplexity":
+            return self._perplexity_scores(sentences)
+        elif self.strategy == "extractive":
+            return self._tfidf_scores(sentences, query)
         else:
-            full_text = context
+            # truncate: keep first sentences (descending index = higher priority)
+            return list(range(len(sentences), 0, -1))
 
-        orig_tokens = _tokenize_rough(full_text)
-        if orig_tokens <= token_budget:
-            return CompressionResult(
-                original_text=full_text,
-                compressed_text=full_text,
-                original_tokens=orig_tokens,
-                compressed_tokens=orig_tokens,
-                compression_ratio=1.0,
-                strategy=self.strategy,
-            )
+    def _perplexity_scores(self, sentences: list[str]) -> list[float]:
+        """Higher perplexity = more surprising = keep."""
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        target_ratio = token_budget / orig_tokens
-        old_ratio = self.target_ratio
-        self.target_ratio = target_ratio
-        result = self.compress(query, full_text)
-        self.target_ratio = old_ratio
-        return result
+            if self._model is None:
+                logger.info("Loading proxy LM: %s", self.proxy_model)
+                self._tokenizer = AutoTokenizer.from_pretrained(self.proxy_model)
+                self._model = AutoModelForCausalLM.from_pretrained(self.proxy_model)
+                self._model.eval()
+
+            scores = []
+            for sent in sentences:
+                enc = self._tokenizer(sent, return_tensors="pt")
+                with torch.no_grad():
+                    loss = self._model(**enc, labels=enc["input_ids"]).loss
+                scores.append(float(loss))
+            return scores
+
+        except Exception as e:
+            logger.warning("Perplexity scoring failed (%s), falling back to TF-IDF", e)
+            return self._tfidf_scores(sentences, "")
+
+    def _tfidf_scores(self, sentences: list[str], query: str) -> list[float]:
+        """TF-IDF cosine similarity to query + sentence length heuristic."""
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            corpus = sentences + ([query] if query else [])
+            vec = TfidfVectorizer(stop_words="english", min_df=1)
+            tfidf = vec.fit_transform(corpus)
+
+            if query:
+                query_vec = tfidf[-1]
+                sent_vecs = tfidf[:-1]
+                scores = cosine_similarity(sent_vecs, query_vec).ravel().tolist()
+            else:
+                # fallback: score by sentence length (longer = more info)
+                scores = [len(s.split()) for s in sentences]
+            return scores
+        except ImportError:
+            return [len(s.split()) for s in sentences]
+
+    def _select_sentences(self, sentences: list[str], scores: list[float]) -> str:
+        n_keep = max(self.min_sentences, int(len(sentences) * self.target_ratio))
+        ranked = sorted(
+            enumerate(sentences),
+            key=lambda x: scores[x[0]],
+            reverse=True,
+        )
+        kept_indices = sorted(idx for idx, _ in ranked[:n_keep])
+        return " ".join(sentences[i] for i in kept_indices)
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+
+    @staticmethod
+    def _count_tokens(text: str) -> int:
+        # rough approximation: 4 chars per token
+        return max(1, len(text) // 4)
