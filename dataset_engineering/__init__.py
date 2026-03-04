@@ -9,7 +9,7 @@ Production dataset engineering for LLM pipelines:
   - FeatureStore     : lightweight feature registry with versioning
 """
 
-from dataset_engineering.versioning import DatasetVersion, DatasetRegistry
+from dataset_engineering.versioning import DatasetVersion, DatasetLineage
 from dataset_engineering.quality import QualityChecker, QualityReport, QualityIssue
 from dataset_engineering.synthetic import SyntheticQAGenerator, SyntheticDataset, SyntheticQA
 from dataset_engineering.feature_store import FeatureStore, FeatureSpec, FeatureVector
@@ -20,7 +20,7 @@ SyntheticDataGenerator = SyntheticQAGenerator
 
 __all__ = [
     "DatasetVersion",
-    "DatasetRegistry",
+    "DatasetLineage",
     "QualityChecker",
     "QualityReport",
     "QualityIssue",

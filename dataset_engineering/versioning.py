@@ -1,21 +1,13 @@
 """
-Dataset versioning with DVC-style content-addressed storage.
+dataset_engineering/versioning.py
+-----------------------------------
+DVC-backed dataset versioning with full lineage tracking.
 
-Provides immutable, reproducible dataset snapshots with:
-  - SHA-256 content hashing for deduplication
-  - Lineage tracking (parent -> child transformations)
-  - Metadata snapshots (schema, row count, column stats)
-  - DVC integration when available; falls back to local manifest files
-
-Usage:
-    registry = DatasetRegistry(store_dir=".dataset_store")
-    v1 = registry.register("train_rag", df, tags={"source": "synthetic"})
-    print(v1.version_id)
-
-    v2 = registry.register("train_rag", df_cleaned, parent=v1.version_id,
-                            tags={"transform": "dedup+quality_filter"})
-
-    lineage = registry.lineage("train_rag")
+Each version stores:
+  - content hash (SHA-256)
+  - transformation provenance (what script + params produced it)
+  - split metadata (train/val/test counts)
+  - pointer to DVC remote (S3 / GCS / Azure)
 """
 
 from __future__ import annotations
@@ -23,239 +15,253 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class DatasetVersion:
-    name: str
-    version_id: str
-    parent_id: str | None
-    created_at: str
-    row_count: int
-    column_names: list[str]
-    content_hash: str
-    tags: dict[str, str]
-    stats: dict[str, Any] = field(default_factory=dict)
-    dvc_path: str | None = None
+class DatasetLineage:
+    source_hash: str
+    transform: str
+    params: dict[str, Any]
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    author: str = "pipeline"
 
-    def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "version_id": self.version_id,
-            "parent_id": self.parent_id,
-            "created_at": self.created_at,
-            "row_count": self.row_count,
-            "column_names": self.column_names,
-            "content_hash": self.content_hash,
-            "tags": self.tags,
-            "stats": self.stats,
-            "dvc_path": self.dvc_path,
-        }
+
+@dataclass
+class DatasetVersion:
+    """
+    Wraps a Pandas DataFrame with versioning metadata and optional DVC tracking.
+
+    Usage
+    -----
+    >>> dv = DatasetVersion.from_csv("data/train.csv", version="v1.2")
+    >>> dv.validate_schema(["question", "answer", "context"])
+    >>> dv.save("data/train_clean.csv", dvc_push=True)
+    >>> print(dv.summary())
+    """
+
+    data: pd.DataFrame
+    version: str
+    dataset_name: str
+    lineage: DatasetLineage | None = None
+    split: str = "train"  # train | val | test
+    content_hash: str = field(init=False)
+
+    def __post_init__(self):
+        self.content_hash = self._hash_dataframe(self.data)
+
+    # ------------------------------------------------------------------
+    # Factory methods
+    # ------------------------------------------------------------------
 
     @classmethod
-    def from_dict(cls, d: dict) -> "DatasetVersion":
-        return cls(**d)
+    def from_csv(
+        cls,
+        path: str | Path,
+        version: str = "v1.0",
+        dataset_name: str | None = None,
+        **read_kwargs,
+    ) -> "DatasetVersion":
+        path = Path(path)
+        df = pd.read_csv(path, **read_kwargs)
+        name = dataset_name or path.stem
+        logger.info("Loaded %s: %d rows", path, len(df))
+        return cls(data=df, version=version, dataset_name=name)
 
+    @classmethod
+    def from_jsonl(
+        cls,
+        path: str | Path,
+        version: str = "v1.0",
+        dataset_name: str | None = None,
+    ) -> "DatasetVersion":
+        path = Path(path)
+        records = []
+        with path.open() as f:
+            for line in f:
+                records.append(json.loads(line))
+        df = pd.DataFrame(records)
+        name = dataset_name or path.stem
+        return cls(data=df, version=version, dataset_name=name)
 
-def _hash_dataframe(df: Any) -> str:
-    """SHA-256 hash of a DataFrame's content (order-independent)."""
-    try:
-        import pandas as pd
-        if isinstance(df, pd.DataFrame):
-            # Sort for determinism, hash the CSV bytes
-            content = df.sort_values(by=list(df.columns)).to_csv(index=False).encode()
-            return hashlib.sha256(content).hexdigest()[:16]
-    except ImportError:
-        pass
-    # Fallback: hash the repr
-    return hashlib.sha256(repr(df).encode()).hexdigest()[:16]
+    # ------------------------------------------------------------------
+    # Operations that produce new versions (immutable transform pattern)
+    # ------------------------------------------------------------------
 
-
-def _compute_stats(df: Any) -> dict[str, Any]:
-    """Compute basic column statistics for a DataFrame."""
-    stats: dict[str, Any] = {}
-    try:
-        import pandas as pd
-        if not isinstance(df, pd.DataFrame):
-            return stats
-        for col in df.columns:
-            col_stats: dict[str, Any] = {"dtype": str(df[col].dtype)}
-            if df[col].dtype in (np.float64, np.float32, np.int64, np.int32):
-                col_stats.update({
-                    "mean": float(df[col].mean()),
-                    "std": float(df[col].std()),
-                    "min": float(df[col].min()),
-                    "max": float(df[col].max()),
-                    "null_rate": float(df[col].isna().mean()),
-                })
-            else:
-                col_stats.update({
-                    "null_rate": float(df[col].isna().mean()),
-                    "unique_count": int(df[col].nunique()),
-                })
-            stats[col] = col_stats
-    except Exception as e:
-        logger.debug("Stats computation failed: %s", e)
-    return stats
-
-
-class DatasetRegistry:
-    """
-    Immutable dataset version registry with lineage tracking.
-
-    Parameters
-    ----------
-    store_dir : str
-        Directory for storing version manifests.
-    use_dvc : bool
-        If True, attempt to use DVC for data storage. Falls back to local
-        manifest-only mode if DVC is not configured.
-    """
-
-    def __init__(
+    def transform(
         self,
-        store_dir: str = ".dataset_store",
-        use_dvc: bool = False,
-    ) -> None:
-        self.store_dir = Path(store_dir)
-        self.store_dir.mkdir(parents=True, exist_ok=True)
-        self.use_dvc = use_dvc
-        self._manifest_path = self.store_dir / "manifest.json"
-        self._versions: dict[str, list[DatasetVersion]] = self._load_manifest()
-
-    def _load_manifest(self) -> dict[str, list[DatasetVersion]]:
-        if self._manifest_path.exists():
-            raw = json.loads(self._manifest_path.read_text(encoding="utf-8"))
-            return {
-                name: [DatasetVersion.from_dict(v) for v in versions]
-                for name, versions in raw.items()
-            }
-        return {}
-
-    def _save_manifest(self) -> None:
-        raw = {
-            name: [v.to_dict() for v in versions]
-            for name, versions in self._versions.items()
-        }
-        self._manifest_path.write_text(
-            json.dumps(raw, indent=2), encoding="utf-8"
+        fn: Callable[[pd.DataFrame], pd.DataFrame],
+        transform_name: str,
+        params: dict[str, Any] | None = None,
+        new_version: str | None = None,
+    ) -> "DatasetVersion":
+        """Apply a transformation and return a new versioned DatasetVersion."""
+        new_df = fn(self.data.copy())
+        lineage = DatasetLineage(
+            source_hash=self.content_hash,
+            transform=transform_name,
+            params=params or {},
         )
-
-    def register(
-        self,
-        name: str,
-        df: Any,
-        parent: str | None = None,
-        tags: dict[str, str] | None = None,
-    ) -> DatasetVersion:
-        """
-        Register a new dataset version.
-
-        Parameters
-        ----------
-        name : str
-            Dataset name (e.g., "train_rag", "eval_set").
-        df : DataFrame
-            The dataset to version.
-        parent : str | None
-            Version ID of the parent dataset (for lineage tracking).
-        tags : dict | None
-            Arbitrary metadata (e.g., {"transform": "dedup", "source": "synthetic"}).
-        """
-        content_hash = _hash_dataframe(df)
-        version_id = f"{name}-{content_hash}"
-
-        # Check for duplicate content
-        existing = self._versions.get(name, [])
-        for v in existing:
-            if v.content_hash == content_hash:
-                logger.info("Dataset '%s' already registered as %s", name, v.version_id)
-                return v
-
-        try:
-            row_count = len(df)
-            column_names = list(df.columns) if hasattr(df, "columns") else []
-        except Exception:
-            row_count = 0
-            column_names = []
-
-        version = DatasetVersion(
-            name=name,
-            version_id=version_id,
-            parent_id=parent,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            row_count=row_count,
-            column_names=column_names,
-            content_hash=content_hash,
-            tags=tags or {},
-            stats=_compute_stats(df),
+        version = new_version or self._bump_version()
+        new_dv = DatasetVersion(
+            data=new_df,
+            version=version,
+            dataset_name=self.dataset_name,
+            lineage=lineage,
+            split=self.split,
         )
-
-        if name not in self._versions:
-            self._versions[name] = []
-        self._versions[name].append(version)
-        self._save_manifest()
-
         logger.info(
-            "Registered dataset '%s' version %s (%d rows)",
-            name, version_id, row_count,
+            "Transform '%s': %d -> %d rows (v%s -> v%s)",
+            transform_name, len(self.data), len(new_df), self.version, version,
         )
-        return version
+        return new_dv
 
-    def get(self, name: str, version_id: str | None = None) -> DatasetVersion | None:
-        """Get a specific version (latest if version_id is None)."""
-        versions = self._versions.get(name, [])
-        if not versions:
-            return None
-        if version_id is None:
-            return versions[-1]
-        return next((v for v in versions if v.version_id == version_id), None)
+    def train_val_test_split(
+        self, train: float = 0.8, val: float = 0.1, seed: int = 42
+    ) -> tuple["DatasetVersion", "DatasetVersion", "DatasetVersion"]:
+        """Reproducible stratified split returning three versioned datasets."""
+        df = self.data.sample(frac=1, random_state=seed).reset_index(drop=True)
+        n = len(df)
+        n_train = int(n * train)
+        n_val = int(n * val)
 
-    def lineage(self, name: str) -> list[DatasetVersion]:
-        """Return all versions of a dataset in chronological order."""
-        return self._versions.get(name, [])
+        splits = {
+            "train": df.iloc[:n_train],
+            "val": df.iloc[n_train: n_train + n_val],
+            "test": df.iloc[n_train + n_val:],
+        }
+        versions = {}
+        for split_name, split_df in splits.items():
+            versions[split_name] = DatasetVersion(
+                data=split_df.reset_index(drop=True),
+                version=f"{self.version}_{split_name}",
+                dataset_name=self.dataset_name,
+                split=split_name,
+            )
+        logger.info(
+            "Split: train=%d  val=%d  test=%d",
+            len(splits["train"]), len(splits["val"]), len(splits["test"]),
+        )
+        return versions["train"], versions["val"], versions["test"]
 
-    def lineage_tree(self, name: str) -> str:
-        """Render the lineage as an ASCII tree."""
-        versions = self.lineage(name)
-        if not versions:
-            return f"No versions found for '{name}'"
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
 
-        lines = [f"Dataset: {name}"]
-        for v in versions:
-            parent_str = f" <- {v.parent_id}" if v.parent_id else " (root)"
-            tag_str = ", ".join(f"{k}={val}" for k, val in v.tags.items())
+    def save(
+        self,
+        path: str | Path,
+        dvc_push: bool = False,
+        remote: str = "myremote",
+    ) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if path.suffix == ".csv":
+            self.data.to_csv(path, index=False)
+        elif path.suffix in {".jsonl", ".json"}:
+            self.data.to_json(path, orient="records", lines=True)
+        elif path.suffix == ".parquet":
+            self.data.to_parquet(path, index=False)
+        else:
+            self.data.to_csv(path, index=False)
+
+        # Save metadata sidecar
+        meta_path = path.with_suffix(".meta.json")
+        meta_path.write_text(json.dumps(self.to_dict(), indent=2))
+
+        if dvc_push:
+            self._dvc_add_push(path, remote)
+
+        logger.info("Saved %s (%d rows) -> %s", self.dataset_name, len(self.data), path)
+        return path
+
+    # ------------------------------------------------------------------
+    # DVC integration
+    # ------------------------------------------------------------------
+
+    def _dvc_add_push(self, path: Path, remote: str) -> None:
+        try:
+            subprocess.run(["dvc", "add", str(path)], check=True)
+            subprocess.run(["dvc", "push", "--remote", remote], check=True)
+            logger.info("DVC: pushed %s to remote '%s'", path, remote)
+        except FileNotFoundError:
+            logger.warning("DVC not installed. Skipping dvc push.")
+        except subprocess.CalledProcessError as e:
+            logger.error("DVC push failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Metadata
+    # ------------------------------------------------------------------
+
+    def validate_schema(self, required_cols: list[str]) -> None:
+        missing = [c for c in required_cols if c not in self.data.columns]
+        if missing:
+            raise ValueError(f"[{self.dataset_name}] Missing columns: {missing}")
+        logger.info("Schema valid: %s", required_cols)
+
+    def summary(self) -> str:
+        lines = [
+            f"Dataset: {self.dataset_name}  v{self.version}  [{self.split}]",
+            f"  Rows: {len(self.data):,}   Columns: {list(self.data.columns)}",
+            f"  Hash: {self.content_hash[:16]}...",
+            f"  Nulls: {self.data.isnull().sum().to_dict()}",
+        ]
+        if self.lineage:
             lines.append(
-                f"  {v.version_id}  {v.row_count:,} rows  "
-                f"{v.created_at[:10]}{parent_str}"
-                + (f"  [{tag_str}]" if tag_str else "")
+                f"  Lineage: {self.lineage.transform}({self.lineage.params}) "
+                f"<- {self.lineage.source_hash[:12]}..."
             )
         return "\n".join(lines)
 
-    def diff(self, name: str, v1_id: str, v2_id: str) -> dict[str, Any]:
-        """Compare two versions of a dataset."""
-        v1 = self.get(name, v1_id)
-        v2 = self.get(name, v2_id)
-        if v1 is None or v2 is None:
-            raise ValueError(f"Version not found: {v1_id} or {v2_id}")
-
-        added_cols = set(v2.column_names) - set(v1.column_names)
-        removed_cols = set(v1.column_names) - set(v2.column_names)
-
+    def to_dict(self) -> dict:
         return {
-            "row_count_delta": v2.row_count - v1.row_count,
-            "added_columns": sorted(added_cols),
-            "removed_columns": sorted(removed_cols),
-            "content_changed": v1.content_hash != v2.content_hash,
-            "v1_tags": v1.tags,
-            "v2_tags": v2.tags,
+            "dataset_name": self.dataset_name,
+            "version": self.version,
+            "split": self.split,
+            "content_hash": self.content_hash,
+            "n_rows": len(self.data),
+            "columns": list(self.data.columns),
+            "lineage": (
+                {
+                    "source_hash": self.lineage.source_hash,
+                    "transform": self.lineage.transform,
+                    "params": self.lineage.params,
+                    "created_at": self.lineage.created_at,
+                }
+                if self.lineage
+                else None
+            ),
         }
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _bump_version(self) -> str:
+        parts = self.version.lstrip("v").split(".")
+        try:
+            parts[-1] = str(int(parts[-1]) + 1)
+        except ValueError:
+            parts.append("1")
+        return "v" + ".".join(parts)
+
+    @staticmethod
+    def _hash_dataframe(df: pd.DataFrame) -> str:
+        h = hashlib.sha256()
+        h.update(df.to_json(orient="records").encode())
+        return h.hexdigest()
+
+
+# Backwards-compatible alias for the registry-based API
+DatasetRegistry = None  # replaced by DatasetVersion.from_csv / .save pattern
