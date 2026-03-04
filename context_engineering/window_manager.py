@@ -1,217 +1,211 @@
 """
-Context window budget manager.
+context_engineering/window_manager.py
+---------------------------------------
+Manages the LLM context window under a token budget.
 
-Allocates the available token budget across competing context sources:
-  - System prompt
-  - Conversation history
-  - Retrieved chunks
-  - Few-shot examples
-  - Scratch pad / chain-of-thought space
-
-Uses priority-based eviction: lower-priority items are truncated first
-when the total budget is exceeded.
-
-Usage:
-    manager = WindowManager(total_budget=8192, model="gpt-4o-mini")
-    manager.add("system", system_prompt, priority=10)
-    manager.add("history", conversation_history, priority=7)
-    manager.add("chunks", retrieved_context, priority=9)
-    manager.add("few_shot", few_shot_block, priority=5)
-
-    result = manager.fit()
-    print(result.summary())
-    final_prompt = result.assembled_prompt
+Priority eviction: when context exceeds budget, lower-priority slots are
+dropped first. Supports:
+  - system prompt (highest priority, never evicted)
+  - retrieved chunks (medium priority, evictable)
+  - conversation history (low priority, oldest evicted first)
+  - few-shot examples (configurable priority)
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-# Model-specific token budgets (context window - generation reserve)
-MODEL_BUDGETS: dict[str, int] = {
-    "gpt-4o": 127_000,
-    "gpt-4o-mini": 127_000,
-    "gpt-4-turbo": 127_000,
-    "gpt-3.5-turbo": 15_500,
-    "claude-3-5-sonnet": 195_000,
-    "llama-3.1-8b": 127_000,
-    "mistral-7b": 31_500,
-}
 
-GENERATION_RESERVE = 1024  # tokens reserved for model output
-
-
-def _count_tokens(text: str) -> int:
-    """Rough token count (words * 4/3). Replace with tiktoken for precision."""
-    try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except ImportError:
-        return max(1, len(text.split()) * 4 // 3)
+class Priority(IntEnum):
+    SYSTEM = 100    # never evicted
+    FEW_SHOT = 80   # evict last among optional
+    RETRIEVED = 60  # evict if over budget
+    HISTORY = 40    # evict oldest first
+    SCRATCH = 20    # ephemeral, first to go
 
 
 @dataclass
 class ContextSlot:
-    name: str
+    key: str
     text: str
-    priority: int
-    token_count: int = 0
-    truncated: bool = False
-    original_token_count: int = 0
+    priority: Priority
+    tokens: int = 0
+    position: int = 0  # insertion order for FIFO eviction
 
-    def __post_init__(self) -> None:
-        self.token_count = _count_tokens(self.text)
-        self.original_token_count = self.token_count
+    def __post_init__(self):
+        if self.tokens == 0:
+            self.tokens = max(1, len(self.text) // 4)
 
 
 @dataclass
 class WindowResult:
     slots: list[ContextSlot]
-    total_budget: int
-    used_tokens: int
-    truncated_slots: list[str]
-    assembled_prompt: str
+    total_tokens: int
+    evicted: list[ContextSlot]
+    budget: int
 
     @property
     def utilization(self) -> float:
-        return self.used_tokens / self.total_budget
+        return self.total_tokens / self.budget if self.budget else 0.0
+
+    def to_messages(self) -> list[dict]:
+        """Format slots as OpenAI-style messages list."""
+        messages = []
+        for slot in sorted(self.slots, key=lambda s: (-s.priority, s.position)):
+            role = "system" if slot.priority == Priority.SYSTEM else "user"
+            messages.append({"role": role, "content": slot.text})
+        return messages
 
     def summary(self) -> str:
         lines = [
-            f"Window Budget: {self.used_tokens}/{self.total_budget} tokens "
-            f"({self.utilization:.1%} utilized)",
+            f"Budget: {self.total_tokens}/{self.budget} ({self.utilization:.1%})",
+            f"Slots kept: {len(self.slots)}, evicted: {len(self.evicted)}",
         ]
-        for slot in sorted(self.slots, key=lambda s: -s.priority):
-            status = " [TRUNCATED]" if slot.truncated else ""
-            lines.append(
-                f"  {slot.name:15s} priority={slot.priority:2d}  "
-                f"{slot.token_count:5d} tokens{status}"
-            )
-        if self.truncated_slots:
-            lines.append(f"Truncated: {', '.join(self.truncated_slots)}")
+        for slot in self.slots:
+            lines.append(f"  [{slot.priority.name:10s}] {slot.key}: {slot.tokens} tokens")
+        if self.evicted:
+            lines.append("Evicted:")
+            for slot in self.evicted:
+                lines.append(f"  [{slot.priority.name:10s}] {slot.key}: {slot.tokens} tokens")
         return "\n".join(lines)
 
 
 class ContextWindowManager:
     """
-    Priority-based context window allocator.
+    Assembles LLM context within a strict token budget.
 
-    Parameters
-    ----------
-    total_budget : int | None
-        Maximum tokens. If None, looks up model in MODEL_BUDGETS.
-    model : str
-        Model name for automatic budget lookup.
-    generation_reserve : int
-        Tokens reserved for model output (subtracted from total_budget).
-    assembly_order : list[str] | None
-        Slot names in the order they should appear in the assembled prompt.
-        If None, slots are assembled in descending priority order.
+    Usage
+    -----
+    >>> mgr = ContextWindowManager(token_budget=4096)
+    >>> mgr.add("system", system_prompt, Priority.SYSTEM)
+    >>> mgr.add("chunk_0", retrieved_text, Priority.RETRIEVED)
+    >>> mgr.add("history", conversation, Priority.HISTORY)
+    >>> result = mgr.build()
+    >>> messages = result.to_messages()
     """
 
     def __init__(
         self,
-        total_budget: int | None = None,
-        model: str = "gpt-4o-mini",
-        generation_reserve: int = GENERATION_RESERVE,
-        assembly_order: list[str] | None = None,
-    ) -> None:
-        if total_budget is not None:
-            self.total_budget = total_budget - generation_reserve
-        else:
-            raw = MODEL_BUDGETS.get(model, 127_000)
-            self.total_budget = raw - generation_reserve
-
-        self.assembly_order = assembly_order
+        token_budget: int = 4096,
+        reserve_for_output: int = 512,
+        tokenizer: str | None = None,
+    ):
+        self.token_budget = token_budget
+        self.reserve_for_output = reserve_for_output
+        self._effective_budget = token_budget - reserve_for_output
         self._slots: list[ContextSlot] = []
+        self._counter = 0
+        self._tokenizer = None
+        self._tokenizer_name = tokenizer
 
-    def add(self, name: str, text: str, priority: int = 5) -> "ContextWindowManager":
-        """
-        Add a context slot.
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-        Parameters
-        ----------
-        name : str
-            Identifier (e.g., "system", "history", "chunks").
-        text : str
-            The text content.
-        priority : int
-            Eviction priority: higher = kept longer. Range [1, 10].
-        """
-        self._slots.append(ContextSlot(name=name, text=text, priority=priority))
-        return self
-
-    def fit(self) -> WindowResult:
-        """
-        Fit all slots into the budget using priority-based eviction.
-
-        Eviction strategy:
-        1. Compute total tokens across all slots.
-        2. While over budget, truncate the lowest-priority slot by 20%.
-        3. Repeat until within budget or all slots at minimum size.
-        """
-        slots = [ContextSlot(s.name, s.text, s.priority) for s in self._slots]
-        truncated_names: list[str] = []
-
-        total = sum(s.token_count for s in slots)
-
-        while total > self.total_budget:
-            # Find lowest-priority slot with content to truncate
-            evictable = [s for s in slots if s.token_count > 50]
-            if not evictable:
-                break
-            target = min(evictable, key=lambda s: (s.priority, -s.token_count))
-
-            # Truncate by 20% (word-level approximation)
-            words = target.text.split()
-            keep = max(int(len(words) * 0.8), 10)
-            target.text = " ".join(words[:keep]) + " [...]"
-            target.token_count = _count_tokens(target.text)
-            target.truncated = True
-            if target.name not in truncated_names:
-                truncated_names.append(target.name)
-
-            total = sum(s.token_count for s in slots)
-
-        # Assemble prompt
-        if self.assembly_order:
-            slot_map = {s.name: s for s in slots}
-            ordered = [slot_map[n] for n in self.assembly_order if n in slot_map]
-            remainder = [s for s in slots if s.name not in self.assembly_order]
-            ordered.extend(sorted(remainder, key=lambda s: -s.priority))
-        else:
-            ordered = sorted(slots, key=lambda s: -s.priority)
-
-        assembled = "\n\n".join(s.text for s in ordered if s.text.strip())
-
-        logger.info(
-            "WindowManager: %d/%d tokens used (%.1f%%), %d slots truncated",
-            total, self.total_budget, 100 * total / self.total_budget,
-            len(truncated_names),
+    def add(self, key: str, text: str, priority: Priority = Priority.RETRIEVED) -> None:
+        """Add a context slot. Duplicate keys overwrite existing."""
+        tokens = self._count_tokens(text)
+        slot = ContextSlot(
+            key=key,
+            text=text,
+            priority=priority,
+            tokens=tokens,
+            position=self._counter,
         )
+        # overwrite if key exists
+        self._slots = [s for s in self._slots if s.key != key]
+        self._slots.append(slot)
+        self._counter += 1
+
+    def add_chunks(
+        self,
+        chunks: list[str],
+        prefix: str = "chunk",
+        priority: Priority = Priority.RETRIEVED,
+    ) -> None:
+        """Add multiple retrieved chunks with auto-generated keys."""
+        for i, chunk in enumerate(chunks):
+            self.add(f"{prefix}_{i}", chunk, priority)
+
+    def remove(self, key: str) -> None:
+        self._slots = [s for s in self._slots if s.key != key]
+
+    def clear(self, priority: Priority | None = None) -> None:
+        if priority is None:
+            self._slots = []
+        else:
+            self._slots = [s for s in self._slots if s.priority != priority]
+
+    def build(self) -> WindowResult:
+        """
+        Apply priority eviction and return the final window.
+        Eviction order: lowest priority first, then oldest (FIFO) within same priority.
+        """
+        total = sum(s.tokens for s in self._slots)
+        if total <= self._effective_budget:
+            return WindowResult(
+                slots=list(self._slots),
+                total_tokens=total,
+                evicted=[],
+                budget=self._effective_budget,
+            )
+
+        # sort: lowest priority first, then oldest (FIFO within priority)
+        eviction_order = sorted(
+            self._slots, key=lambda s: (s.priority, -s.position)
+        )
+
+        evictable = {Priority.SCRATCH, Priority.HISTORY, Priority.RETRIEVED, Priority.FEW_SHOT}
+        evicted: list[ContextSlot] = []
+        current_tokens = total
+
+        for slot in eviction_order:
+            if current_tokens <= self._effective_budget:
+                break
+            if slot.priority in evictable:
+                evicted.append(slot)
+                current_tokens -= slot.tokens
+
+        if current_tokens > self._effective_budget:
+            logger.warning(
+                "Could not fit within budget (%d > %d); system/few-shot slots are too large",
+                current_tokens, self._effective_budget,
+            )
+
+        evicted_keys = {s.key for s in evicted}
+        final_slots = [s for s in self._slots if s.key not in evicted_keys]
 
         return WindowResult(
-            slots=slots,
-            total_budget=self.total_budget,
-            used_tokens=total,
-            truncated_slots=truncated_names,
-            assembled_prompt=assembled,
+            slots=final_slots,
+            total_tokens=current_tokens,
+            evicted=evicted,
+            budget=self._effective_budget,
         )
 
-    def clear(self) -> "ContextWindowManager":
-        self._slots = []
-        return self
+    @property
+    def current_tokens(self) -> int:
+        return sum(s.tokens for s in self._slots)
 
-    @classmethod
-    def for_model(
-        cls,
-        model: str,
-        assembly_order: list[str] | None = None,
-    ) -> "ContextWindowManager":
-        """Factory: create a ContextWindowManager sized for a specific model."""
-        return cls(model=model, assembly_order=assembly_order)
+    @property
+    def remaining_budget(self) -> int:
+        return max(0, self._effective_budget - self.current_tokens)
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _count_tokens(self, text: str) -> int:
+        if self._tokenizer_name and self._tokenizer is None:
+            try:
+                from transformers import AutoTokenizer
+                self._tokenizer = AutoTokenizer.from_pretrained(self._tokenizer_name)
+            except Exception:
+                pass
+        if self._tokenizer:
+            return len(self._tokenizer.encode(text))
+        return max(1, len(text) // 4)

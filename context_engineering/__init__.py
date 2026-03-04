@@ -11,7 +11,7 @@ Techniques for maximising LLM performance through context construction:
 
 from context_engineering.compressor import PromptCompressor, CompressionResult
 from context_engineering.few_shot import DynamicFewShot, FewShotExample
-from context_engineering.window_manager import ContextWindowManager, WindowResult
+from context_engineering.window_manager import ContextWindowManager, WindowResult, Priority, ContextSlot
 from context_engineering.chain_of_thought import ChainOfThoughtBuilder, CoTResult
 from context_engineering.context_manager import (
     ContextManager,
@@ -28,6 +28,8 @@ __all__ = [
     "FewShotExample",
     "ContextWindowManager",
     "WindowResult",
+    "Priority",
+    "ContextSlot",
     "ChainOfThoughtBuilder",
     "CoTResult",
     "ContextManager",
