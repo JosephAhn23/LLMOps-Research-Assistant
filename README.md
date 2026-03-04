@@ -236,22 +236,22 @@ agents/               LangGraph pipeline + multi-agent system
   multi_agent/        Supervisor, Research/Critic/Verifier agents, consensus,
                       routing, circuit breakers, HITL, OTel tracing
 api/                  FastAPI gateway, WebSocket streaming, Celery batch queue
-causal/               Uplift modeling, Double ML, propensity score matching, CUPED
 causal_inference/     DR-Learner/T-Learner CATE, DoWhy backdoor adjustment,
                       counterfactual what-if analysis for retrieval pipeline
 cicd/                 RAGAS regression gate (blocks CI on quality drop)
 compile/              torch.compile benchmarking, AoT export, graph break detection
 config/               Hydra structured configs + provider factory
-context_engineering/  Token budgeting, query rewriting (HyDE/step-back/sub-query),
-                      TF-IDF/perplexity compression, MMR few-shot selection,
-                      priority window manager, CoT strategies (zero-shot/self-consistency/ToT)
+context_engineering/  PromptCompressor (LLMLingua-style), DynamicFewShot (FAISS+MMR),
+                      ContextWindowManager (priority eviction), ChainOfThoughtBuilder
 csrc/                 Custom CUDA kernels: fused attention, RMSNorm, top-k sampling
 cuda_ext/             Fused softmax+temperature, RoPE, top-p sampling kernels
-dataset_engineering/  DVC-style dataset versioning with lineage, quality checks
-                      (schema/null/PII/drift), synthetic QA generation, feature registry
+dataset_engineering/  DatasetVersion (DVC lineage), QualityChecker (schema/PII/drift),
+                      SyntheticQAGenerator (4 question types), FeatureStore (topo sort)
 eval/                 Gradio evaluation UI
 experimentation/      A/B router, O'Brien-Fleming sequential testing, CUPED,
                       Double ML, power analysis, SRM detection, markdown reports
+experiments/          ABExperiment: Variant handlers, GuardrailConfig, Thompson Sampling,
+                      bootstrap CI, MLflow integration
 finetune/             QLoRA, RLHF/PPO, GRPO, Ray fault-tolerant training, quantization
 governance/           Model cards, bias checks (SPD/EOD), SHA-256 audit log,
                       PII redaction, CI enforcement with GitHub Actions integration
@@ -265,11 +265,11 @@ monitoring/           Prometheus + Grafana stack, SLO alert rules, CloudWatch/Az
 multimodal/           CLIP retrieval, Stable Diffusion RAG grounding, LLaVA VQA
 observability/        FastAPI Prometheus middleware, pre-built Grafana dashboard
 recsys/               Learn-to-rank (LightGBM), SHAP explainability, NDCG/MAP/MRR
-rl/                   RLHF pipeline (TRL), GRPO reasoning fine-tuning
+rl/                   RLHF pipeline (TRL), GRPO reasoning fine-tuning, Gym environments
 safety/               Adversarial tests, semantic safety, ML classifiers, behavioral classifiers
 sandbox/              Docker-based sandboxed code execution with static analysis
 spark_ml/             Delta Lake medallion pipeline, feature store, MLflow model registry
-streaming/            Kafka + Kinesis producers/consumers, DLQ, DynamoDB checkpointing
+streaming/            Kafka + Kinesis producers/consumers, drift detection, online embeddings
 tokenization/         BPE/WordPiece from scratch, SentencePiece, multilingual analysis
 infra/                Kubernetes, Terraform (AWS), Azure Bicep/Terraform, SageMaker
 tests/                117 tests: unit, integration, adversarial, multi-agent
