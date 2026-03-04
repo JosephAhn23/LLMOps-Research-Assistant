@@ -1,281 +1,274 @@
 """
-Synthetic QA dataset generation for RAG fine-tuning and evaluation.
+dataset_engineering/synthetic.py
+----------------------------------
+LLM-powered synthetic QA pair generation for RAG evaluation datasets.
 
-Generates:
-  - Factoid QA pairs from source documents
-  - Multi-hop reasoning questions requiring multiple document chunks
-  - Negative (unanswerable) examples for robustness training
-  - Adversarial questions designed to test retrieval precision
+Generates diverse, grounded QA pairs from retrieved documents -- covering:
+  - Factoid questions
+  - Multi-hop reasoning questions
+  - Negative / unanswerable questions
+  - Abstractive summary questions
 
-All generation uses an LLM via a configurable callable. Falls back to
-template-based generation if no LLM is provided (useful for CI/testing).
-
-Usage:
-    generator = SyntheticDataGenerator(llm_fn=my_openai_fn)
-    dataset = generator.generate(
-        documents=chunks,
-        n_factoid=100,
-        n_multihop=50,
-        n_negative=30,
-    )
-    df = dataset.to_dataframe()
+Output is a versioned DatasetVersion ready for RAGAS evaluation.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-import random
-import re
+import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-LLMFn = Callable[[str], str]
+QuestionType = Literal["factoid", "multi_hop", "abstractive", "negative"]
+
+_SYSTEM_PROMPT = """You are a rigorous QA dataset generator.
+Given a context passage, generate high-quality question-answer pairs.
+Always output valid JSON only -- no preamble, no markdown fences."""
+
+_TEMPLATES: dict[str, str] = {
+    "factoid": """Generate {n} factoid questions directly answerable from the context.
+Context: {context}
+
+Output JSON array:
+[{{"question": "...", "answer": "...", "type": "factoid"}}]""",
+
+    "multi_hop": """Generate {n} multi-hop questions requiring reasoning across multiple sentences.
+Context: {context}
+
+Output JSON array:
+[{{"question": "...", "answer": "...", "type": "multi_hop", "reasoning": "..."}}]""",
+
+    "abstractive": """Generate {n} questions requiring abstractive summarisation of the context.
+Context: {context}
+
+Output JSON array:
+[{{"question": "...", "answer": "...", "type": "abstractive"}}]""",
+
+    "negative": """Generate {n} plausible but UNANSWERABLE questions based on the context.
+The question should be related to the topic but not answerable from the text.
+Context: {context}
+
+Output JSON array:
+[{{"question": "...", "answer": "This cannot be answered from the provided context.", "type": "negative"}}]""",
+}
 
 
+@dataclass
+class SyntheticConfig:
+    model: str = "gpt-4o-mini"
+    n_per_type: int = 2
+    question_types: list[QuestionType] = field(
+        default_factory=lambda: ["factoid", "multi_hop", "abstractive", "negative"]
+    )
+    max_context_chars: int = 2000
+    temperature: float = 0.7
+    max_retries: int = 3
+    openai_api_key: str | None = None
+
+
+# Legacy dataclasses kept for backwards compatibility
 @dataclass
 class SyntheticQA:
     question: str
     answer: str
-    source_chunks: list[str]
-    question_type: str  # "factoid" | "multihop" | "negative" | "adversarial"
-    difficulty: str = "medium"  # "easy" | "medium" | "hard"
+    source_chunks: list[str] = field(default_factory=list)
+    question_type: str = "factoid"
+    difficulty: str = "medium"
     metadata: dict = field(default_factory=dict)
 
 
 @dataclass
 class SyntheticDataset:
-    samples: list[SyntheticQA]
+    samples: list[SyntheticQA] = field(default_factory=list)
 
-    def to_dataframe(self) -> "Any":
+    def to_dataframe(self):
         import pandas as pd
         return pd.DataFrame([
             {
                 "question": s.question,
                 "answer": s.answer,
-                "source_chunks": " | ".join(s.source_chunks),
                 "question_type": s.question_type,
                 "difficulty": s.difficulty,
             }
             for s in self.samples
         ])
 
-    def filter_by_type(self, question_type: str) -> "SyntheticDataset":
-        return SyntheticDataset([s for s in self.samples if s.question_type == question_type])
-
-    def summary(self) -> str:
-        from collections import Counter
-        type_counts = Counter(s.question_type for s in self.samples)
-        diff_counts = Counter(s.difficulty for s in self.samples)
-        lines = [
-            f"SyntheticDataset: {len(self.samples)} samples",
-            f"  Types: {dict(type_counts)}",
-            f"  Difficulty: {dict(diff_counts)}",
-        ]
-        return "\n".join(lines)
-
-
-# ── Prompt templates ──────────────────────────────────────────────────────────
-
-FACTOID_PROMPT = """Based on the following document excerpt, generate a factoid question and its answer.
-The question should be answerable directly from the text.
-
-Document:
-{document}
-
-Generate a JSON object with keys "question" and "answer":
-"""
-
-MULTIHOP_PROMPT = """Based on the following two document excerpts, generate a multi-hop question that requires
-information from BOTH documents to answer correctly.
-
-Document 1:
-{doc1}
-
-Document 2:
-{doc2}
-
-Generate a JSON object with keys "question" and "answer":
-"""
-
-NEGATIVE_PROMPT = """Based on the following document excerpt, generate a question that CANNOT be answered
-from the document (the answer is not in the text). The question should be plausible and related to the topic.
-
-Document:
-{document}
-
-Generate a JSON object with keys "question" and "answer" where answer is "unanswerable":
-"""
-
-ADVERSARIAL_PROMPT = """Based on the following document excerpt, generate an adversarial question designed
-to test retrieval precision. The question should use similar vocabulary to the document but ask about
-something subtly different or require careful reading.
-
-Document:
-{document}
-
-Generate a JSON object with keys "question" and "answer":
-"""
-
-
-def _parse_llm_qa(response: str) -> tuple[str, str]:
-    """Extract question/answer from LLM JSON response."""
-    import json
-    try:
-        # Try to find JSON block
-        match = re.search(r'\{[^{}]*"question"[^{}]*"answer"[^{}]*\}', response, re.DOTALL)
-        if match:
-            obj = json.loads(match.group())
-            return obj.get("question", ""), obj.get("answer", "")
-    except Exception:
-        pass
-
-    # Fallback: regex extraction
-    q_match = re.search(r'"question"\s*:\s*"([^"]+)"', response)
-    a_match = re.search(r'"answer"\s*:\s*"([^"]+)"', response)
-    question = q_match.group(1) if q_match else ""
-    answer = a_match.group(1) if a_match else ""
-    return question, answer
-
-
-def _template_factoid(document: str) -> tuple[str, str]:
-    """Template-based factoid generation (no LLM required)."""
-    sentences = [s.strip() for s in document.split(".") if len(s.strip()) > 20]
-    if not sentences:
-        return "What is the main topic?", "See the document."
-    sentence = random.choice(sentences[:5])
-    words = sentence.split()
-    if len(words) > 3:
-        # Replace a key noun with "what"
-        question = f"What {' '.join(words[1:min(8, len(words))])}?"
-        return question, sentence
-    return "What is described in this passage?", sentence
-
 
 class SyntheticQAGenerator:
     """
-    Generates synthetic QA datasets for RAG training and evaluation.
+    Generates synthetic QA pairs from document chunks using an LLM.
 
-    Parameters
-    ----------
-    llm_fn : LLMFn | None
-        Callable that takes a prompt and returns a completion. If None,
-        uses template-based generation (no API key required).
-    seed : int
-        Random seed for reproducibility.
+    Usage
+    -----
+    >>> gen = SyntheticQAGenerator()
+    >>> records = gen.generate_from_chunks(chunks, n_per_chunk=3)
+    >>> dv = gen.to_dataset_version(records, version="v1.0")
     """
 
-    def __init__(
+    def __init__(self, config: SyntheticConfig | None = None):
+        self.config = config or SyntheticConfig()
+        self._client = None
+
+    def generate_from_chunks(
         self,
-        llm_fn: LLMFn | None = None,
-        seed: int = 42,
-    ) -> None:
-        self.llm_fn = llm_fn
-        random.seed(seed)
+        chunks: list[str],
+        n_per_chunk: int | None = None,
+        show_progress: bool = True,
+    ) -> list[dict]:
+        """
+        Generate QA pairs from a list of document chunks.
 
-    def generate(
+        Returns flat list of records with keys:
+          question, answer, context, type, chunk_idx
+        """
+        all_records = []
+        n_per_type = n_per_chunk or self.config.n_per_type
+
+        for i, chunk in enumerate(chunks):
+            if show_progress:
+                logger.info("Generating QA for chunk %d/%d", i + 1, len(chunks))
+            records = self._generate_for_chunk(chunk, i, n_per_type)
+            all_records.extend(records)
+
+        logger.info("Generated %d QA pairs from %d chunks", len(all_records), len(chunks))
+        return all_records
+
+    def to_dataset_version(
         self,
-        documents: list[str],
-        n_factoid: int = 50,
-        n_multihop: int = 20,
-        n_negative: int = 15,
-        n_adversarial: int = 10,
-    ) -> SyntheticDataset:
-        """
-        Generate a mixed synthetic dataset.
+        records: list[dict],
+        version: str = "v1.0",
+        dataset_name: str = "synthetic_qa",
+    ):
+        """Convert generated records to a DatasetVersion."""
+        import pandas as pd
+        from dataset_engineering.versioning import DatasetLineage, DatasetVersion
 
-        Parameters
-        ----------
-        documents : list[str]
-            Source document chunks to generate questions from.
-        n_factoid : int
-            Number of factoid QA pairs.
-        n_multihop : int
-            Number of multi-hop questions (requires >= 2 documents).
-        n_negative : int
-            Number of unanswerable questions.
-        n_adversarial : int
-            Number of adversarial questions.
-        """
-        samples: list[SyntheticQA] = []
-
-        samples.extend(self._generate_factoid(documents, n_factoid))
-        if len(documents) >= 2:
-            samples.extend(self._generate_multihop(documents, n_multihop))
-        samples.extend(self._generate_negative(documents, n_negative))
-        samples.extend(self._generate_adversarial(documents, n_adversarial))
-
-        logger.info(
-            "Generated %d synthetic QA pairs (%d factoid, %d multihop, %d negative, %d adversarial)",
-            len(samples), n_factoid, n_multihop, n_negative, n_adversarial,
+        df = pd.DataFrame(records)
+        lineage = DatasetLineage(
+            source_hash="synthetic",
+            transform="SyntheticQAGenerator",
+            params={
+                "model": self.config.model,
+                "n_per_type": self.config.n_per_type,
+                "question_types": self.config.question_types,
+            },
         )
-        return SyntheticDataset(samples)
+        return DatasetVersion(
+            data=df,
+            version=version,
+            dataset_name=dataset_name,
+            lineage=lineage,
+        )
 
-    def _generate_factoid(self, documents: list[str], n: int) -> list[SyntheticQA]:
-        samples = []
-        docs = random.choices(documents, k=n)
-        for doc in docs:
-            q, a = self._qa_from_prompt(FACTOID_PROMPT.format(document=doc[:1000]), doc)
-            if q:
-                samples.append(SyntheticQA(
-                    question=q, answer=a,
-                    source_chunks=[doc],
-                    question_type="factoid",
-                    difficulty="easy",
-                ))
-        return samples
+    def augment_with_paraphrases(
+        self,
+        records: list[dict],
+        question_col: str = "question",
+        n_paraphrases: int = 2,
+    ) -> list[dict]:
+        """
+        Augment dataset with paraphrased questions for robustness testing.
+        Each original record produces n_paraphrases additional variants.
+        """
+        augmented = list(records)
+        for rec in records:
+            paraphrases = self._paraphrase(rec[question_col], n=n_paraphrases)
+            for para in paraphrases:
+                new_rec = dict(rec)
+                new_rec[question_col] = para
+                new_rec["is_paraphrase"] = True
+                augmented.append(new_rec)
+        return augmented
 
-    def _generate_multihop(self, documents: list[str], n: int) -> list[SyntheticQA]:
-        samples = []
-        for _ in range(n):
-            doc1, doc2 = random.sample(documents, 2)
-            prompt = MULTIHOP_PROMPT.format(doc1=doc1[:500], doc2=doc2[:500])
-            q, a = self._qa_from_prompt(prompt, doc1 + " " + doc2)
-            if q:
-                samples.append(SyntheticQA(
-                    question=q, answer=a,
-                    source_chunks=[doc1, doc2],
-                    question_type="multihop",
-                    difficulty="hard",
-                ))
-        return samples
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
-    def _generate_negative(self, documents: list[str], n: int) -> list[SyntheticQA]:
-        samples = []
-        docs = random.choices(documents, k=n)
-        for doc in docs:
-            q, _ = self._qa_from_prompt(NEGATIVE_PROMPT.format(document=doc[:1000]), doc)
-            if q:
-                samples.append(SyntheticQA(
-                    question=q, answer="unanswerable",
-                    source_chunks=[doc],
-                    question_type="negative",
-                    difficulty="medium",
-                ))
-        return samples
+    def _generate_for_chunk(
+        self, chunk: str, chunk_idx: int, n_per_type: int
+    ) -> list[dict]:
+        records = []
+        context = chunk[: self.config.max_context_chars]
 
-    def _generate_adversarial(self, documents: list[str], n: int) -> list[SyntheticQA]:
-        samples = []
-        docs = random.choices(documents, k=n)
-        for doc in docs:
-            q, a = self._qa_from_prompt(ADVERSARIAL_PROMPT.format(document=doc[:1000]), doc)
-            if q:
-                samples.append(SyntheticQA(
-                    question=q, answer=a,
-                    source_chunks=[doc],
-                    question_type="adversarial",
-                    difficulty="hard",
-                ))
-        return samples
+        for q_type in self.config.question_types:
+            prompt = _TEMPLATES[q_type].format(context=context, n=n_per_type)
+            raw = self._call_llm(prompt)
+            parsed = self._parse_response(raw)
+            for item in parsed:
+                records.append({
+                    "question": item.get("question", ""),
+                    "answer": item.get("answer", ""),
+                    "context": context,
+                    "type": q_type,
+                    "chunk_idx": chunk_idx,
+                    "reasoning": item.get("reasoning", ""),
+                })
+        return records
 
-    def _qa_from_prompt(self, prompt: str, fallback_doc: str) -> tuple[str, str]:
-        if self.llm_fn is not None:
+    def _call_llm(self, prompt: str) -> str:
+        """Call OpenAI API with exponential backoff retry."""
+        client = self._get_client()
+        for attempt in range(self.config.max_retries):
             try:
-                response = self.llm_fn(prompt)
-                q, a = _parse_llm_qa(response)
-                if q and a:
-                    return q, a
+                response = client.chat.completions.create(
+                    model=self.config.model,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=self.config.temperature,
+                    response_format={"type": "json_object"},
+                )
+                return response.choices[0].message.content
             except Exception as e:
-                logger.debug("LLM generation failed: %s", e)
-        return _template_factoid(fallback_doc)
+                wait = 2 ** attempt
+                logger.warning(
+                    "LLM call failed (attempt %d): %s. Retrying in %ds",
+                    attempt + 1, e, wait,
+                )
+                time.sleep(wait)
+        raise RuntimeError(f"LLM call failed after {self.config.max_retries} retries")
+
+    def _parse_response(self, raw: str) -> list[dict]:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return data
+            # Handle {items: [...]} or similar wrapper
+            for key in ["items", "questions", "pairs", "data"]:
+                if key in data and isinstance(data[key], list):
+                    return data[key]
+            return [data]
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse LLM response as JSON")
+            return []
+
+    def _paraphrase(self, question: str, n: int) -> list[str]:
+        prompt = (
+            f"Generate {n} paraphrases of this question. "
+            f"Output JSON array of strings only.\n"
+            f"Question: {question}"
+        )
+        raw = self._call_llm(prompt)
+        try:
+            result = json.loads(raw)
+            if isinstance(result, list):
+                return result[:n]
+        except Exception:
+            pass
+        return []
+
+    def _get_client(self):
+        if self._client is None:
+            try:
+                from openai import OpenAI
+                kwargs = {}
+                if self.config.openai_api_key:
+                    kwargs["api_key"] = self.config.openai_api_key
+                self._client = OpenAI(**kwargs)
+            except ImportError:
+                raise ImportError("Install openai: pip install openai")
+        return self._client
