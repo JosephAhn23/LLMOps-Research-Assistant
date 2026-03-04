@@ -1,24 +1,18 @@
 """
-Dynamic few-shot example selection.
+context_engineering/few_shot.py
+---------------------------------
+Dynamic few-shot selection: retrieve semantically similar examples
+from an example store at inference time rather than hardcoding them.
 
-Retrieves the most relevant few-shot examples for a given query using
-FAISS embedding similarity, then applies MMR (Maximal Marginal Relevance)
-to ensure diversity -- avoiding redundant examples that all cover the same
-reasoning pattern.
-
-Falls back to random selection if sentence-transformers is not available.
-
-Usage:
-    selector = FewShotSelector(examples=EXAMPLE_POOL)
-    selected = selector.select(query="What is RAG?", k=3)
-    prompt = selector.build_prompt(query, selected)
+Backed by FAISS for fast similarity search over example embeddings.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -27,193 +21,198 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class FewShotExample:
-    question: str
-    answer: str
-    metadata: dict[str, Any] | None = None
+class Example:
+    id: str
+    input: str
+    output: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    embedding: np.ndarray | None = None
 
-    def to_prompt_str(self) -> str:
-        return f"Q: {self.question}\nA: {self.answer}"
-
-
-def _embed_texts(texts: list[str]) -> np.ndarray:
-    """Embed texts with sentence-transformers; fall back to TF-IDF vectors."""
-    try:
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        return model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-    except ImportError:
-        logger.debug("sentence-transformers not available; using TF-IDF fallback")
-        return _tfidf_vectors(texts)
+    def to_prompt_str(self, input_label: str = "Q", output_label: str = "A") -> str:
+        return f"{input_label}: {self.input}\n{output_label}: {self.output}"
 
 
-def _tfidf_vectors(texts: list[str]) -> np.ndarray:
-    """Sparse TF-IDF vectors normalised to unit length."""
-    import re
-    from collections import Counter
-
-    def tokenize(t: str) -> list[str]:
-        return re.findall(r"\b\w+\b", t.lower())
-
-    tokenized = [tokenize(t) for t in texts]
-    vocab = sorted({tok for toks in tokenized for tok in toks})
-    vocab_idx = {w: i for i, w in enumerate(vocab)}
-
-    vecs = np.zeros((len(texts), len(vocab)), dtype=np.float32)
-    for i, toks in enumerate(tokenized):
-        for tok, cnt in Counter(toks).items():
-            if tok in vocab_idx:
-                vecs[i, vocab_idx[tok]] = cnt
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    return vecs / (norms + 1e-9)
-
-
-def _mmr(
-    query_vec: np.ndarray,
-    candidate_vecs: np.ndarray,
-    k: int,
-    lambda_: float = 0.5,
-) -> list[int]:
-    """
-    Maximal Marginal Relevance selection.
-
-    Balances relevance to the query (lambda_) against diversity among
-    selected examples (1 - lambda_).
-
-    Returns indices into candidate_vecs.
-    """
-    selected: list[int] = []
-    remaining = list(range(len(candidate_vecs)))
-
-    for _ in range(min(k, len(candidate_vecs))):
-        if not remaining:
-            break
-
-        relevance = candidate_vecs[remaining] @ query_vec
-
-        if not selected:
-            best_local = int(np.argmax(relevance))
-        else:
-            selected_vecs = candidate_vecs[selected]
-            # Max similarity to any already-selected example
-            redundancy = (candidate_vecs[remaining] @ selected_vecs.T).max(axis=1)
-            mmr_scores = lambda_ * relevance - (1 - lambda_) * redundancy
-            best_local = int(np.argmax(mmr_scores))
-
-        selected.append(remaining[best_local])
-        remaining.pop(best_local)
-
-    return selected
+# Alias for backwards compatibility with __init__.py export
+FewShotExample = Example
 
 
 class DynamicFewShot:
     """
-    FAISS-backed dynamic few-shot selector with MMR diversity.
+    Retrieves semantically relevant few-shot examples for a given query.
 
-    Parameters
-    ----------
-    examples : list[FewShotExample]
-        Pool of candidate examples to select from.
-    lambda_ : float
-        MMR trade-off: 1.0 = pure relevance, 0.0 = pure diversity.
+    Usage
+    -----
+    >>> store = DynamicFewShot(encoder="sentence-transformers/all-MiniLM-L6-v2")
+    >>> store.add_examples(examples)
+    >>> shots = store.retrieve(query="What is RLHF?", k=3)
+    >>> prompt = store.build_prompt(query, shots)
     """
 
     def __init__(
         self,
-        examples: list[FewShotExample],
-        lambda_: float = 0.7,
-    ) -> None:
-        self.examples = examples
-        self.lambda_ = lambda_
-        self._vecs: np.ndarray | None = None
-        self._index: Any | None = None
+        encoder: str = "sentence-transformers/all-MiniLM-L6-v2",
+        similarity: str = "cosine",
+    ):
+        self.encoder_name = encoder
+        self.similarity = similarity
+        self._examples: list[Example] = []
+        self._index = None
+        self._encoder = None
+
+    # ------------------------------------------------------------------
+    # Building the store
+    # ------------------------------------------------------------------
+
+    def add_examples(self, examples: list[Example], batch_size: int = 64) -> None:
+        """Encode examples and add them to the FAISS index."""
+        encoder = self._get_encoder()
+        texts = [ex.input for ex in examples]
+        embeddings = self._encode_batch(encoder, texts, batch_size)
+
+        for ex, emb in zip(examples, embeddings):
+            ex.embedding = emb
+        self._examples.extend(examples)
         self._build_index()
+        logger.info("DynamicFewShot store: %d examples", len(self._examples))
 
-    def _build_index(self) -> None:
-        if not self.examples:
-            return
-        texts = [f"{e.question} {e.answer}" for e in self.examples]
-        self._vecs = _embed_texts(texts)
+    def load_from_jsonl(self, path: str | Path) -> None:
+        """Load examples from a JSONL file with keys: id, input, output, metadata."""
+        path = Path(path)
+        examples = []
+        with path.open() as f:
+            for line in f:
+                obj = json.loads(line)
+                examples.append(Example(**obj))
+        self.add_examples(examples)
 
-        try:
-            import faiss
-            dim = self._vecs.shape[1]
-            self._index = faiss.IndexFlatIP(dim)
-            self._index.add(self._vecs.astype(np.float32))
-            logger.debug("FewShotSelector: FAISS index built (%d examples)", len(self.examples))
-        except ImportError:
-            logger.debug("faiss not available; using numpy dot-product search")
+    def save_to_jsonl(self, path: str | Path) -> None:
+        path = Path(path)
+        with path.open("w") as f:
+            for ex in self._examples:
+                obj = {
+                    "id": ex.id,
+                    "input": ex.input,
+                    "output": ex.output,
+                    "metadata": ex.metadata,
+                }
+                f.write(json.dumps(obj) + "\n")
 
-    def select(self, query: str, k: int = 3) -> list[FewShotExample]:
+    # ------------------------------------------------------------------
+    # Retrieval
+    # ------------------------------------------------------------------
+
+    def retrieve(self, query: str, k: int = 3, diversity: bool = True) -> list[Example]:
         """
-        Select k diverse, relevant examples for the given query.
+        Retrieve top-k semantically similar examples.
 
-        Uses FAISS for fast candidate retrieval, then MMR for diversity.
+        Parameters
+        ----------
+        query     : the current user query
+        k         : number of examples to return
+        diversity : apply MMR (Maximal Marginal Relevance) for diversity
         """
-        if not self.examples:
+        if not self._examples:
+            logger.warning("No examples in store")
             return []
 
-        if self._vecs is None:
-            return random.sample(self.examples, min(k, len(self.examples)))
+        encoder = self._get_encoder()
+        query_emb = self._encode_batch(encoder, [query], batch_size=1)[0]
 
-        query_vec = _embed_texts([query])[0]
-
-        # Retrieve top-2k candidates by relevance
-        n_candidates = min(k * 2, len(self.examples))
-        if self._index is not None:
-            _, candidate_ids = self._index.search(
-                query_vec.reshape(1, -1).astype(np.float32), n_candidates
-            )
-            candidate_ids = candidate_ids[0].tolist()
+        if diversity and len(self._examples) > k:
+            return self._mmr_retrieve(query_emb, k)
         else:
-            sims = self._vecs @ query_vec
-            candidate_ids = list(np.argsort(-sims)[:n_candidates])
-
-        candidate_vecs = self._vecs[candidate_ids]
-        mmr_local = _mmr(query_vec, candidate_vecs, k=k, lambda_=self.lambda_)
-        selected_ids = [candidate_ids[i] for i in mmr_local]
-
-        return [self.examples[i] for i in selected_ids]
+            return self._faiss_retrieve(query_emb, k)
 
     def build_prompt(
         self,
         query: str,
-        examples: list[FewShotExample] | None = None,
-        k: int = 3,
-        system_prefix: str = "",
+        examples: list[Example],
+        system_prompt: str = "",
+        input_label: str = "Q",
+        output_label: str = "A",
     ) -> str:
         """
-        Build a complete few-shot prompt string.
+        Build a few-shot prompt string from retrieved examples.
 
-        Parameters
-        ----------
-        query : str
-            The current user query.
-        examples : list[FewShotExample] | None
-            Pre-selected examples; if None, calls select(query, k).
-        k : int
-            Number of examples to select if examples is None.
-        system_prefix : str
-            Optional system instruction prepended to the prompt.
+        Returns a formatted prompt ready for the LLM.
         """
-        if examples is None:
-            examples = self.select(query, k=k)
-
         parts = []
-        if system_prefix:
-            parts.append(system_prefix.strip())
+        if system_prompt:
+            parts.append(system_prompt.strip())
             parts.append("")
 
         for ex in examples:
-            parts.append(ex.to_prompt_str())
+            parts.append(ex.to_prompt_str(input_label, output_label))
             parts.append("")
 
-        parts.append(f"Q: {query}")
-        parts.append("A:")
-
+        parts.append(f"{input_label}: {query}")
+        parts.append(f"{output_label}:")
         return "\n".join(parts)
 
-    def add_example(self, example: FewShotExample) -> None:
-        """Add a new example to the pool and rebuild the index."""
-        self.examples.append(example)
-        self._build_index()
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _faiss_retrieve(self, query_emb: np.ndarray, k: int) -> list[Example]:
+        import faiss
+        k = min(k, len(self._examples))
+        D, I = self._index.search(query_emb.reshape(1, -1).astype("float32"), k)
+        return [self._examples[i] for i in I[0] if i >= 0]
+
+    def _mmr_retrieve(
+        self, query_emb: np.ndarray, k: int, lambda_: float = 0.5
+    ) -> list[Example]:
+        """Maximal Marginal Relevance for diverse yet relevant examples."""
+        all_embs = np.stack([ex.embedding for ex in self._examples]).astype("float32")
+        query_sims = self._cosine_sim(query_emb, all_embs)
+
+        selected_idx: list[int] = []
+        remaining = list(range(len(self._examples)))
+
+        for _ in range(min(k, len(self._examples))):
+            if not selected_idx:
+                best = int(np.argmax(query_sims))
+            else:
+                sel_embs = all_embs[selected_idx]
+                redundancy = self._cosine_sim_matrix(
+                    all_embs[remaining], sel_embs
+                ).max(axis=1)
+                relevance = query_sims[remaining]
+                mmr_scores = lambda_ * relevance - (1 - lambda_) * redundancy
+                best = remaining[int(np.argmax(mmr_scores))]
+
+            selected_idx.append(best)
+            remaining = [i for i in remaining if i != best]
+
+        return [self._examples[i] for i in selected_idx]
+
+    def _build_index(self) -> None:
+        import faiss
+        embs = np.stack([ex.embedding for ex in self._examples]).astype("float32")
+        if self.similarity == "cosine":
+            faiss.normalize_L2(embs)
+        dim = embs.shape[1]
+        self._index = faiss.IndexFlatIP(dim)
+        self._index.add(embs)
+
+    def _get_encoder(self):
+        if self._encoder is None:
+            from sentence_transformers import SentenceTransformer
+            self._encoder = SentenceTransformer(self.encoder_name)
+        return self._encoder
+
+    def _encode_batch(
+        self, encoder: Any, texts: list[str], batch_size: int
+    ) -> np.ndarray:
+        return encoder.encode(texts, batch_size=batch_size, normalize_embeddings=True)
+
+    @staticmethod
+    def _cosine_sim(vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True).clip(1e-9)
+        return (matrix / norms) @ (vec / np.linalg.norm(vec).clip(1e-9))
+
+    @staticmethod
+    def _cosine_sim_matrix(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        A = A / np.linalg.norm(A, axis=1, keepdims=True).clip(1e-9)
+        B = B / np.linalg.norm(B, axis=1, keepdims=True).clip(1e-9)
+        return A @ B.T
