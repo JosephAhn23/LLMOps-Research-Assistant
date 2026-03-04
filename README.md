@@ -237,13 +237,18 @@ agents/               LangGraph pipeline + multi-agent system
                       routing, circuit breakers, HITL, OTel tracing
 api/                  FastAPI gateway, WebSocket streaming, Celery batch queue
 causal/               Uplift modeling, Double ML, propensity score matching, CUPED
+causal_inference/     DR-Learner/T-Learner CATE, DoWhy backdoor adjustment,
+                      counterfactual what-if analysis for retrieval pipeline
 cicd/                 RAGAS regression gate (blocks CI on quality drop)
 compile/              torch.compile benchmarking, AoT export, graph break detection
 config/               Hydra structured configs + provider factory
 context_engineering/  Token budgeting, query rewriting (HyDE/step-back/sub-query),
-                      retrieval compression, memory decay, model routing
+                      TF-IDF/perplexity compression, MMR few-shot selection,
+                      priority window manager, CoT strategies (zero-shot/self-consistency/ToT)
 csrc/                 Custom CUDA kernels: fused attention, RMSNorm, top-k sampling
 cuda_ext/             Fused softmax+temperature, RoPE, top-p sampling kernels
+dataset_engineering/  DVC-style dataset versioning with lineage, quality checks
+                      (schema/null/PII/drift), synthetic QA generation, feature registry
 eval/                 Gradio evaluation UI
 experimentation/      A/B router, O'Brien-Fleming sequential testing, CUPED,
                       Double ML, power analysis, SRM detection, markdown reports

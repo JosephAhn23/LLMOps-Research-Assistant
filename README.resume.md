@@ -56,6 +56,9 @@ This document maps common ML engineering job requirements to the specific files 
 | A/B testing | `experimentation/ab_router.py` | Deterministic MD5 hash bucketing, MLflow observation logging, guardrail auto-stop |
 | Sequential testing | `experimentation/sequential_testing.py` | O'Brien-Fleming and Pocock alpha spending, continuous monitoring without Type-I inflation |
 | Variance reduction | `experimentation/cuped.py` | CUPED with pre-experiment covariates, optimal theta via covariance/variance ratio |
+| CATE estimation | `causal_inference/uplift.py` | T-Learner, DR-Learner (doubly-robust with cross-fitting), CausalForest via econml; graceful fallback |
+| DoWhy / backdoor adjustment | `causal_inference/retrieval_effect.py` | Causal DAG for retrieval pipeline, backdoor PSW, placebo treatment refutation |
+| Counterfactual analysis | `causal_inference/counterfactual.py` | "What would faithfulness be without reranking?", what-if chunk count, context quality boost |
 | Causal inference | `experimentation/double_ml.py`, `causal/causal_inference.py` | Double ML with k-fold cross-fitting, unbiased ATE from observational data |
 | Uplift modeling | `causal/causal_inference.py` | T-Learner uplift model, propensity score matching, synthetic experiment simulator |
 | Power analysis | `experimentation/power_analysis.py` | Sample size calculator (continuous + binary), MDE for fixed N, sensitivity analysis |
@@ -116,10 +119,22 @@ This document maps common ML engineering job requirements to the specific files 
 
 | Requirement | File(s) | What to say |
 |:---|:---|:---|
-| Prompt compression | `context_engineering/context_manager.py` | Extractive compression, 35% token reduction at same RAGAS scores |
+| Prompt compression | `context_engineering/compressor.py` | TF-IDF + perplexity-based extractive compression, 35% token reduction at same RAGAS scores |
 | Query rewriting | `context_engineering/context_manager.py` | HyDE, step-back prompting, sub-query decomposition, query expansion |
-| Token cost optimization | `context_engineering/context_manager.py` | Token budget allocation, model routing by query complexity |
+| Token cost optimization | `context_engineering/context_manager.py`, `window_manager.py` | Priority-based window eviction, model routing by query complexity |
 | Memory decay | `context_engineering/context_manager.py` | TTL-based context eviction, relevance-weighted retention |
+| Dynamic few-shot selection | `context_engineering/few_shot.py` | FAISS embedding retrieval + MMR diversity, builds complete prompt string |
+| Context window budgeting | `context_engineering/window_manager.py` | Priority eviction across system/history/chunks/few-shot slots, model-aware budgets |
+| Chain-of-thought | `context_engineering/chain_of_thought.py` | Zero-shot, few-shot, self-consistency (majority vote), Tree-of-Thought, scratchpad |
+
+## Dataset Engineering
+
+| Requirement | File(s) | What to say |
+|:---|:---|:---|
+| Dataset versioning (DVC) | `dataset_engineering/versioning.py` | SHA-256 content-addressed snapshots, lineage tracking, diff between versions |
+| Data quality checks | `dataset_engineering/quality.py` | Schema, null rate, duplicates, text length, PII detection, KS drift vs reference |
+| Synthetic data generation | `dataset_engineering/synthetic.py` | LLM-generated factoid/multi-hop/negative/adversarial QA pairs; template fallback for CI |
+| Feature registry | `dataset_engineering/feature_store.py` | Versioned feature specs with dependency tracking, online + offline serving, schema change detection |
 
 ---
 
