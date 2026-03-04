@@ -1,24 +1,36 @@
 """
 dataset_engineering/
---------------------
-Dataset versioning, quality checks, synthetic generation, and feature registry.
+----------------------
+Production dataset engineering for LLM pipelines:
+
+  - DatasetVersion   : DVC-backed versioning with lineage tracking
+  - QualityChecker   : schema validation, dedup, drift detection
+  - SyntheticGen     : LLM-powered synthetic QA pair generation
+  - FeatureStore     : lightweight feature registry with versioning
 """
 
-from dataset_engineering.versioning import DatasetRegistry, DatasetVersion
-from dataset_engineering.quality import DataQualityChecker, QualityReport, QualityIssue
-from dataset_engineering.synthetic import SyntheticDataGenerator, SyntheticDataset, SyntheticQA
+from dataset_engineering.versioning import DatasetVersion, DatasetRegistry
+from dataset_engineering.quality import QualityChecker, QualityReport, QualityIssue
+from dataset_engineering.synthetic import SyntheticQAGenerator, SyntheticDataset, SyntheticQA
 from dataset_engineering.feature_store import FeatureStore, FeatureSpec, FeatureVector
 
+# Backwards-compatible aliases
+DataQualityChecker = QualityChecker
+SyntheticDataGenerator = SyntheticQAGenerator
+
 __all__ = [
-    "DatasetRegistry",
     "DatasetVersion",
-    "DataQualityChecker",
+    "DatasetRegistry",
+    "QualityChecker",
     "QualityReport",
     "QualityIssue",
-    "SyntheticDataGenerator",
+    "SyntheticQAGenerator",
     "SyntheticDataset",
     "SyntheticQA",
     "FeatureStore",
     "FeatureSpec",
     "FeatureVector",
+    # aliases
+    "DataQualityChecker",
+    "SyntheticDataGenerator",
 ]

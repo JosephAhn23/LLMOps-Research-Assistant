@@ -153,7 +153,7 @@ def _template_factoid(document: str) -> tuple[str, str]:
     return "What is described in this passage?", sentence
 
 
-class SyntheticDataGenerator:
+class SyntheticQAGenerator:
     """
     Generates synthetic QA datasets for RAG training and evaluation.
 

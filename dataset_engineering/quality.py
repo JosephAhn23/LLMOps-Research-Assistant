@@ -77,7 +77,7 @@ class QualityReport:
         return "\n".join(lines)
 
 
-class DataQualityChecker:
+class QualityChecker:
     """
     Comprehensive dataset quality checker.
 
