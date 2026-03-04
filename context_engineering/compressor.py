@@ -114,7 +114,7 @@ def _perplexity_scores(sentences: list[str]) -> list[float]:
         return [1.0] * len(sentences)
 
 
-class ContextCompressor:
+class PromptCompressor:
     """
     Compresses retrieved context chunks to fit within a token budget.
 

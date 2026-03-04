@@ -106,7 +106,7 @@ def _mmr(
     return selected
 
 
-class FewShotSelector:
+class DynamicFewShot:
     """
     FAISS-backed dynamic few-shot selector with MMR diversity.
 

@@ -1,3 +1,18 @@
+"""
+context_engineering/
+---------------------
+Techniques for maximising LLM performance through context construction:
+
+  - PromptCompressor   : LLMLingua-style token pruning
+  - DynamicFewShot     : retrieve semantically relevant examples at runtime
+  - ContextWindowMgr   : fit context into token budget with priority eviction
+  - ChainOfThought     : structured CoT prompt builder
+"""
+
+from context_engineering.compressor import PromptCompressor, CompressionResult
+from context_engineering.few_shot import DynamicFewShot, FewShotExample
+from context_engineering.window_manager import ContextWindowManager, WindowResult
+from context_engineering.chain_of_thought import ChainOfThoughtBuilder, CoTResult
 from context_engineering.context_manager import (
     ContextManager,
     ContextBudget,
@@ -5,23 +20,19 @@ from context_engineering.context_manager import (
     RetrievalCompressor,
     TokenCostOptimizer,
 )
-from context_engineering.compressor import ContextCompressor, CompressionResult
-from context_engineering.few_shot import FewShotSelector, FewShotExample
-from context_engineering.window_manager import WindowManager, WindowResult
-from context_engineering.chain_of_thought import ChainOfThought, CoTResult
 
 __all__ = [
+    "PromptCompressor",
+    "CompressionResult",
+    "DynamicFewShot",
+    "FewShotExample",
+    "ContextWindowManager",
+    "WindowResult",
+    "ChainOfThoughtBuilder",
+    "CoTResult",
     "ContextManager",
     "ContextBudget",
     "QueryRewriter",
     "RetrievalCompressor",
     "TokenCostOptimizer",
-    "ContextCompressor",
-    "CompressionResult",
-    "FewShotSelector",
-    "FewShotExample",
-    "WindowManager",
-    "WindowResult",
-    "ChainOfThought",
-    "CoTResult",
 ]

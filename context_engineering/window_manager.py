@@ -97,7 +97,7 @@ class WindowResult:
         return "\n".join(lines)
 
 
-class WindowManager:
+class ContextWindowManager:
     """
     Priority-based context window allocator.
 
@@ -130,7 +130,7 @@ class WindowManager:
         self.assembly_order = assembly_order
         self._slots: list[ContextSlot] = []
 
-    def add(self, name: str, text: str, priority: int = 5) -> "WindowManager":
+    def add(self, name: str, text: str, priority: int = 5) -> "ContextWindowManager":
         """
         Add a context slot.
 
@@ -203,7 +203,7 @@ class WindowManager:
             assembled_prompt=assembled,
         )
 
-    def clear(self) -> "WindowManager":
+    def clear(self) -> "ContextWindowManager":
         self._slots = []
         return self
 
@@ -212,6 +212,6 @@ class WindowManager:
         cls,
         model: str,
         assembly_order: list[str] | None = None,
-    ) -> "WindowManager":
-        """Factory: create a WindowManager sized for a specific model."""
+    ) -> "ContextWindowManager":
+        """Factory: create a ContextWindowManager sized for a specific model."""
         return cls(model=model, assembly_order=assembly_order)

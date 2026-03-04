@@ -119,13 +119,13 @@ This document maps common ML engineering job requirements to the specific files 
 
 | Requirement | File(s) | What to say |
 |:---|:---|:---|
-| Prompt compression | `context_engineering/compressor.py` | TF-IDF + perplexity-based extractive compression, 35% token reduction at same RAGAS scores |
-| Query rewriting | `context_engineering/context_manager.py` | HyDE, step-back prompting, sub-query decomposition, query expansion |
+| Prompt compression | `context_engineering/compressor.py` (`PromptCompressor`) | TF-IDF + perplexity-based extractive compression, 35% token reduction at same RAGAS scores |
+| Query rewriting | `context_engineering/context_manager.py` (`QueryRewriter`) | HyDE, step-back prompting, sub-query decomposition, query expansion |
 | Token cost optimization | `context_engineering/context_manager.py`, `window_manager.py` | Priority-based window eviction, model routing by query complexity |
 | Memory decay | `context_engineering/context_manager.py` | TTL-based context eviction, relevance-weighted retention |
-| Dynamic few-shot selection | `context_engineering/few_shot.py` | FAISS embedding retrieval + MMR diversity, builds complete prompt string |
-| Context window budgeting | `context_engineering/window_manager.py` | Priority eviction across system/history/chunks/few-shot slots, model-aware budgets |
-| Chain-of-thought | `context_engineering/chain_of_thought.py` | Zero-shot, few-shot, self-consistency (majority vote), Tree-of-Thought, scratchpad |
+| Dynamic few-shot selection | `context_engineering/few_shot.py` (`DynamicFewShot`) | FAISS embedding retrieval + MMR diversity, builds complete prompt string |
+| Context window budgeting | `context_engineering/window_manager.py` (`ContextWindowManager`) | Priority eviction across system/history/chunks/few-shot slots, model-aware budgets |
+| Chain-of-thought | `context_engineering/chain_of_thought.py` (`ChainOfThoughtBuilder`) | Zero-shot, few-shot, self-consistency (majority vote), Tree-of-Thought, scratchpad |
 
 ## Dataset Engineering
 

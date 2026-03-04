@@ -114,7 +114,7 @@ def _majority_vote(answers: list[str]) -> tuple[str, float]:
     return best, count / len(answers)
 
 
-class ChainOfThought:
+class ChainOfThoughtBuilder:
     """
     Chain-of-thought prompting with multiple strategies.
 
