@@ -46,7 +46,7 @@
 
 ![CI RAGAS Gate](assets/ci_ragas_gate.png)
 
-*GitHub Actions quality gate: every PR runs RAGAS evaluation and blocks merge if any metric regresses more than 5% against the stored baseline. Merge gets unblocked only when all metrics pass.*
+*GitHub Actions quality gate: every PR runs RAGAS evaluation and blocks merge if any metric regresses more than 5% against the stored baseline.*
 
 </div>
 
@@ -58,17 +58,19 @@
 |:---|:---|:---|
 | **Ingest** | Chunking, embedding, FAISS indexing. HuggingFace Datasets + MinHash dedup. CommonCrawl WARC parsing (S3). Spark distributed ingestion + Spark ML feature engineering (TF-IDF, Word2Vec, K-Means). | Core: locally. WARC/Spark: requires S3 + cluster. |
 | **Search** | Two-stage: FAISS bi-encoder scan across 4 distributed shards, then cross-encoder reranking. Sub-50ms locally. | Locally (single-node + 4-shard Docker Compose). |
-| **Generate** | LangGraph agentic pipeline: stateful graph (retriever, reranker, synthesizer), conditional routing, tool protocols. Token streaming over WebSocket. vLLM backend for self-hosted inference. | Locally with GPT-4o-mini. vLLM requires GPU. |
+| **Generate** | LangGraph multi-agent pipeline: stateful graph (retriever, reranker, synthesizer), conditional routing, tool protocols. Token streaming over WebSocket. vLLM backend for self-hosted inference. | Locally with GPT-4o-mini. vLLM requires GPU. |
 | **Fine-tune** | QLoRA (4-bit NF4) via PEFT + BitsAndBytes + Accelerate. RLHF with PPO: Bradley-Terry reward model, KL-penalised policy optimisation, Process Reward Model. GRPO reasoning fine-tuning (DeepSeek-R1/VeRL style). Ray Train for fault-tolerant distributed training. | Requires GPU. Not run in CI. |
-| **Evaluate** | RAGAS (faithfulness, relevancy, precision, recall) with MLflow tracking. **Wired into GitHub Actions CI** — quality gate blocks merge on regression > 5%. | Locally with OpenAI key. CI gate runs on every PR. |
+| **Evaluate** | RAGAS (faithfulness, relevancy, precision, recall) with MLflow tracking. **Wired into GitHub Actions CI** -- quality gate blocks merge on regression > 5%. | Locally with OpenAI key. CI gate runs on every PR. |
 | **Serve** | TensorRT-LLM engine builder (FP16/INT8/FP8), ONNX/Triton pipeline, NVIDIA NIM adapter, MoE expert parallelism (Mixtral/DeepSeek), custom CUDA kernels (fused attention, RMSNorm, top-k). | GPU/A100 required for TRT-LLM. ONNX path runs on CPU. |
-| **Secure** | Rule-based injection detection, embedding anomaly detection, LLM-as-judge red-team suite (9 attack categories), ML jailbreak classifier, behavioral classifiers (toxicity, intent, topic). Governance framework: model cards, bias auditing, PII redaction, dataset audit log. | Locally. |
-| **Experiment** | A/B router with hash-based traffic splitting, SPRT sequential testing, Thompson Sampling bandit, guardrail metric auto-stop. Causal inference: Double ML, propensity score matching, uplift modeling. | Locally. |
+| **Secure** | Rule-based injection detection, embedding anomaly detection, LLM-as-judge red-team suite (9 attack categories), ML jailbreak classifier, behavioral classifiers (toxicity, intent, topic). | Locally. |
+| **Govern** | Model cards (Mitchell et al. standard), bias evaluation (statistical parity, equal opportunity), PII redaction (10 pattern types), SHA-256 cryptographic audit log, CI enforcement with `--exit-code` for GitHub Actions. | Locally. |
+| **Experiment** | Hash-based A/B router, O'Brien-Fleming sequential testing (no alpha inflation), CUPED variance reduction, Double ML for unbiased ATE, sample size calculator, SRM detection, automated markdown reports. | Locally. |
+| **Causal** | Uplift modeling (T-Learner), DoWhy-style propensity score matching, Double ML cross-fitting, CUPED variance reduction, synthetic experiment simulator with confounders. | Locally. |
 | **Data** | Delta Lake medallion pipeline (bronze/silver/gold), feature store with point-in-time correct joins, MLflow model registry with gated promotion and rollback. | Locally (mock Spark). Requires Databricks/EMR for distributed. |
 | **Recommend** | Hybrid retrieval + LightGBM learn-to-rank, SHAP feature importance, MMR diversity reranking, offline NDCG/MAP/MRR evaluation. | Locally. |
 | **Stream** | Stateful stream processor for Kafka/Kinesis events, Page-Hinkley + ADWIN drift detection, PSI distribution monitoring, online embedding refresh. | Locally. Kafka: requires broker. |
 | **Context** | Token budget allocation, query rewriting (HyDE, step-back, sub-query decomposition), retrieval compression, memory decay policy, model routing by query complexity. | Locally. |
-| **Multi-agent** | Research/Critic/Verifier agent loop with typed message bus, shared memory with version vectors, conflict resolution, iterative self-correction. | Locally. |
+| **Multi-agent** | Research/Critic/Verifier agent loop with circuit breakers, exponential backoff retry, graceful degradation, HITL checkpoints, OpenTelemetry tracing, FastAPI endpoints. | Locally. |
 | **Deploy** | Docker Compose, Kubernetes manifests, Terraform (AWS: VPC/EC2/ALB/RDS), Azure Container Apps + Bicep IaC. | Docker Compose: locally. K8s/Terraform: implemented, not live. |
 | **Connect** | MCP server (stdio) exposes retrieve, ingest, evaluate, and benchmark as tools for Claude Desktop / Cursor. | Locally. |
 
@@ -101,23 +103,23 @@
 
 ## Business Impact
 
-This is not a research demo. Every component maps to a concrete business outcome.
+Every component maps to a concrete business outcome.
 
 | Capability | Business Problem Solved | Measurable Impact |
 |:---|:---|:---|
 | **RAGAS CI gate** | Regressions reach production silently and erode user trust | Catch quality drops before merge, not after user complaints |
 | **Two-stage retrieval** | Embedding similarity alone misses 15-25% of relevant results | Cross-encoder reranking recovers precision without full-scan cost |
 | **Context engineering** | Long-context LLM calls cost 5-10x more than necessary | 35% token reduction via extractive compression, same RAGAS scores |
-| **A/B router + sequential testing** | Fixed-horizon tests waste compute on obvious winners/losers | Early stopping cuts experiment duration by 30-50% |
-| **Causal inference (Double ML)** | Correlation metrics can't prove a new feature caused improvement | Unbiased ATE estimation isolates true treatment effect from selection bias |
+| **Sequential testing (O'Brien-Fleming)** | Fixed-horizon tests waste compute on obvious winners/losers | Early stopping cuts experiment duration by 30-50% without inflating false positive rate |
+| **CUPED variance reduction** | Standard A/B tests need large samples for noisy metrics | Pre-experiment covariate adjustment reduces required sample size by 30-50% |
+| **Double ML causal inference** | Correlation metrics can't prove a new feature caused improvement | Unbiased ATE estimation isolates true treatment effect from selection bias |
 | **Uplift modeling** | Deploying a feature to all users wastes resources if it only helps a subset | Target high-uplift users; skip the rest |
+| **SRM detection** | Traffic split bugs silently invalidate experiment results | Chi-squared test catches assignment mechanism failures before decisions are made |
 | **Streaming drift detection** | Model quality degrades silently as data distribution shifts | Page-Hinkley + ADWIN detects drift within 50-100 events vs batch jobs that catch it days later |
-| **Online embedding refresh** | Full reindexing on new content takes hours | Micro-batch ingestion updates the index within minutes of new document arrival |
 | **Feature store + Delta Lake** | Training/serving skew causes silent accuracy loss | Point-in-time correct feature joins eliminate leakage; Delta time-travel enables reproducibility |
-| **Model registry governance** | Promoting a worse model to production is invisible without gating | Automated quality gate + champion/challenger comparison blocks silent regressions |
-| **PII redaction** | Prompt logging leaks user data; violates GDPR/CCPA | Automatic scrubbing before any log write; dataset audit trail for compliance |
-| **Learn-to-rank + SHAP** | Black-box retrieval ranking is unauditable | SHAP explanations show exactly which signals drove each recommendation |
-| **Multi-agent system** | Single-pass generation hallucinates on complex questions | Critic/Verifier loop reduces unsupported claims before returning to user |
+| **PII redaction + audit log** | Prompt logging leaks user data; violates GDPR/CCPA | Automatic scrubbing before any log write; SHA-256 hash chain for tamper-proof compliance records |
+| **Governance CI enforcement** | Fairness regressions ship silently | Build fails if statistical parity diff or equal opportunity diff exceeds threshold |
+| **Multi-agent critic/verifier** | Single-pass generation hallucinates on complex questions | Critic/Verifier loop with circuit breakers reduces unsupported claims before returning to user |
 | **QLoRA + RLHF** | Cloud LLM APIs cost $0.005/1k tokens at scale | Self-hosted fine-tuned model: ~$0.0001/1k tokens at 1,500 tok/s on A100 |
 
 ### Cost-per-Query Analysis
@@ -146,6 +148,15 @@ FAISS runs in-process: no network hop, no managed service cost, no vendor lock-i
 
 **Why QLoRA instead of full fine-tuning?**
 Full fine-tuning an 8B model requires roughly 80GB of GPU memory. QLoRA compresses the frozen base model to 4-bit and trains only small LoRA adapter matrices injected into attention layers: less than 1% of total parameters. The quality gap versus full fine-tuning is small for most tasks; the hardware requirement drops from 4x A100s to a single consumer GPU.
+
+**Why Double ML for causal inference instead of a simple A/B test?**
+A/B tests measure correlation. When users self-select into features (e.g., power users enable reranking), a naive comparison is confounded. Double ML residualises both the outcome and the treatment on observed covariates using k-fold cross-fitting, then regresses the residuals. The resulting ATE estimate is unbiased even when the confounders are complex and nonlinear.
+
+**Why O'Brien-Fleming sequential testing instead of fixed-horizon?**
+Checking p-values repeatedly inflates the false positive rate. O'Brien-Fleming alpha spending allocates the Type-I error budget across planned looks: conservative early (high boundary), liberal late (low boundary). The overall false positive rate stays at alpha regardless of how many times you check.
+
+**Why circuit breakers in the multi-agent system?**
+A slow or failing verifier agent would block the entire pipeline under naive retry. The circuit breaker opens after N consecutive failures, immediately returning a degraded response (unverified output with a confidence penalty) instead of waiting for timeouts. After a cooldown period, one probe call tests recovery. This prevents cascade failures while maintaining responsiveness.
 
 **Why Kafka + Redis Streams (both)?**
 Kafka is the right choice for production: durable, ordered, replayable, consumer groups. Redis Streams is the right choice for local development: zero infrastructure, same API shape, instant startup. The `EventBus` class auto-detects which backend to use from environment variables, so the same code runs locally and in production without changes.
@@ -184,6 +195,15 @@ python eval/gradio_eval_ui.py
 
 # Start MCP server (for Claude Desktop / Cursor)
 python mcp_server/server.py
+
+# Run A/B experiment with causal analysis
+python -m experimentation.ab_router
+
+# Run governance CI checks
+python -m governance.ci_enforcement --model-name rag-embedder --version 3 --exit-code
+
+# Run multi-agent pipeline
+python -c "from agents.multi_agent.supervisor import Supervisor; s=Supervisor(); t=s.run('What is RAG?'); print(t.final_answer)"
 ```
 
 ### MCP Integration
@@ -202,8 +222,9 @@ python mcp_server/server.py
 ### Testing
 
 ```bash
-pytest                          # 66 tests (unit + integration + adversarial)
-pytest tests/test_safety.py -v  # Safety + red-team tests
+pytest                              # 117 tests (unit + integration + adversarial)
+pytest tests/test_multi_agent.py -v # 51 multi-agent tests
+pytest tests/test_safety.py -v      # Safety + red-team tests
 ```
 
 ---
@@ -211,33 +232,42 @@ pytest tests/test_safety.py -v  # Safety + red-team tests
 ## Project Structure
 
 ```
-agents/           LangGraph pipeline: orchestrator, retriever, reranker, synthesizer
-api/              FastAPI gateway, WebSocket streaming, Celery batch queue
-cicd/             RAGAS regression gate (blocks CI on quality drop)
-compile/          torch.compile benchmarking, AoT export, graph break detection
-config/           Hydra structured configs + provider factory
-csrc/             Custom CUDA kernels: fused attention, RMSNorm, top-k sampling
-cuda_ext/         Fused softmax+temperature, RoPE, top-p sampling kernels
-eval/             Gradio evaluation UI
-experiments/      A/B framework with statistical significance testing
-finetune/         QLoRA, RLHF/PPO, GRPO, Ray fault-tolerant training, quantization
-inference/        vLLM, llama.cpp, TRT-LLM, ONNX/Triton, NIM, MoE serving
-ingestion/        Chunking, FAISS indexing, WARC parsing, Spark ML pipelines
-interpretability/ Attention visualization, linear probes, activation patching, CKA
-mcp_server/       MCP protocol server (6 tools, stdio transport)
-microservices/    ServiceRegistry, EventBus (Kafka/Redis), API gateway pattern
-mlops/            RAGAS tracking, MLflow integration, evaluation pipeline
-monitoring/       Prometheus + Grafana stack, SLO alert rules, CloudWatch/Azure Monitor
-multimodal/       CLIP retrieval, Stable Diffusion RAG grounding, LLaVA VQA
-observability/    FastAPI Prometheus middleware, pre-built Grafana dashboard
-rl/               RLHF pipeline (TRL), GRPO reasoning fine-tuning
-safety/           Adversarial tests, semantic safety, ML classifiers, behavioral classifiers
-sandbox/          Docker-based sandboxed code execution with static analysis
-spark_ml/         GBT intent classifier, KMeans clustering, Databricks Unity Catalog
-streaming/        Kafka + Kinesis producers/consumers, DLQ, DynamoDB checkpointing
-tokenization/     BPE/WordPiece from scratch, SentencePiece, multilingual analysis
-infra/            Kubernetes, Terraform (AWS), Azure Bicep/Terraform, SageMaker
-tests/            66 tests: unit, integration, adversarial, shard failure modes
+agents/               LangGraph pipeline + multi-agent system
+  multi_agent/        Supervisor, Research/Critic/Verifier agents, consensus,
+                      routing, circuit breakers, HITL, OTel tracing
+api/                  FastAPI gateway, WebSocket streaming, Celery batch queue
+causal/               Uplift modeling, Double ML, propensity score matching, CUPED
+cicd/                 RAGAS regression gate (blocks CI on quality drop)
+compile/              torch.compile benchmarking, AoT export, graph break detection
+config/               Hydra structured configs + provider factory
+context_engineering/  Token budgeting, query rewriting (HyDE/step-back/sub-query),
+                      retrieval compression, memory decay, model routing
+csrc/                 Custom CUDA kernels: fused attention, RMSNorm, top-k sampling
+cuda_ext/             Fused softmax+temperature, RoPE, top-p sampling kernels
+eval/                 Gradio evaluation UI
+experimentation/      A/B router, O'Brien-Fleming sequential testing, CUPED,
+                      Double ML, power analysis, SRM detection, markdown reports
+finetune/             QLoRA, RLHF/PPO, GRPO, Ray fault-tolerant training, quantization
+governance/           Model cards, bias checks (SPD/EOD), SHA-256 audit log,
+                      PII redaction, CI enforcement with GitHub Actions integration
+inference/            vLLM, llama.cpp, TRT-LLM, ONNX/Triton, NIM, MoE serving
+ingestion/            Chunking, FAISS indexing, WARC parsing, Spark ML pipelines
+interpretability/     Attention visualization, linear probes, activation patching, CKA
+mcp_server/           MCP protocol server (6 tools, stdio transport)
+microservices/        ServiceRegistry, EventBus (Kafka/Redis), API gateway pattern
+mlops/                RAGAS tracking, MLflow integration, evaluation pipeline
+monitoring/           Prometheus + Grafana stack, SLO alert rules, CloudWatch/Azure Monitor
+multimodal/           CLIP retrieval, Stable Diffusion RAG grounding, LLaVA VQA
+observability/        FastAPI Prometheus middleware, pre-built Grafana dashboard
+recsys/               Learn-to-rank (LightGBM), SHAP explainability, NDCG/MAP/MRR
+rl/                   RLHF pipeline (TRL), GRPO reasoning fine-tuning
+safety/               Adversarial tests, semantic safety, ML classifiers, behavioral classifiers
+sandbox/              Docker-based sandboxed code execution with static analysis
+spark_ml/             Delta Lake medallion pipeline, feature store, MLflow model registry
+streaming/            Kafka + Kinesis producers/consumers, DLQ, DynamoDB checkpointing
+tokenization/         BPE/WordPiece from scratch, SentencePiece, multilingual analysis
+infra/                Kubernetes, Terraform (AWS), Azure Bicep/Terraform, SageMaker
+tests/                117 tests: unit, integration, adversarial, multi-agent
 ```
 
 ---
@@ -245,5 +275,7 @@ tests/            66 tests: unit, integration, adversarial, shard failure modes
 <div align="center">
 
 **Built by [Joseph Ahn](https://github.com/JosephAhn23)**
+
+[Resume Map](README.resume.md) | [Contributing](CONTRIBUTING.md)
 
 </div>
