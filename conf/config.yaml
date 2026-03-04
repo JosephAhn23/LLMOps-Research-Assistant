@@ -1,0 +1,10 @@
+defaults:
+- model: gpt4o_mini
+- retrieval: hybrid
+- training: qlora
+- eval: ragas
+- infra: local
+- _self_
+experiment:
+  name: baseline
+  seed: 42

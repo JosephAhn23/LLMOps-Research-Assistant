@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 import hashlib
 import os
 
-import mlflow
+from mlops.compat import mlflow
 import numpy as np
 import redis
 from scipy import stats
@@ -70,6 +70,7 @@ class ABExperiment:
         self.min_detectable_effect = min_detectable_effect
         self.status = ExperimentStatus.RUNNING
 
+        _ttl = 86400 * 30  # 30 days
         redis_client.hset(
             f"experiment:{experiment_id}",
             mapping={
@@ -86,6 +87,8 @@ class ABExperiment:
                 ),
             },
         )
+        redis_client.expire(f"experiment:{experiment_id}", _ttl)
+        redis_client.expire(f"experiment:{experiment_id}:assignments", _ttl)
 
     def assign_variant(self, user_id: str) -> ExperimentVariant:
         """
@@ -129,8 +132,9 @@ class ABExperiment:
             request_id=request_id,
             metadata=metadata or {},
         )
+        results_key = f"experiment:{self.experiment_id}:results:{variant_name}"
         redis_client.rpush(
-            f"experiment:{self.experiment_id}:results:{variant_name}",
+            results_key,
             json.dumps(
                 {
                     "metric_value": metric_value,
@@ -140,6 +144,7 @@ class ABExperiment:
                 }
             ),
         )
+        redis_client.expire(results_key, 86400 * 30)
 
     def get_results(self, variant_name: str) -> List[float]:
         """Get all recorded metric values for a variant."""
@@ -217,7 +222,10 @@ class ABExperiment:
                 }
             )
 
-            with mlflow.start_run(run_name=f"ab-analysis-{self.experiment_id}", nested=True):
+            with mlflow.start_run(
+                run_name=f"ab-analysis-{self.experiment_id}",
+                nested=mlflow.active_run() is not None,
+            ):
                 mlflow.log_metrics(
                     {
                         "p_value": p_value,

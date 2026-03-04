@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -65,25 +66,36 @@ class RAGASTracker:
         """
         logger.info("Running RAGAS eval on %d examples", len(eval_dataset))
         result = evaluate(eval_dataset, metrics=METRICS)
-        scores = {
+        raw_scores = {
             name: float(result[name])
             for name in METRIC_NAMES
             if name in result
         }
+        scores = {k: v for k, v in raw_scores.items() if not math.isnan(v)}
+        if not scores:
+            logger.warning("All RAGAS scores are NaN — skipping MLflow log.")
+            return {}
+        if len(scores) < len(raw_scores):
+            dropped = set(raw_scores) - set(scores)
+            logger.warning("Dropped NaN scores for metrics: %s", dropped)
 
         ts = datetime.now().strftime("%Y%m%d-%H%M")
         with mlflow.start_run(run_name=run_name or f"ragas-eval-{ts}"):
-            mlflow.log_metrics(scores)
-            mlflow.log_param("num_examples", len(eval_dataset))
-            mlflow.log_param("eval_timestamp", datetime.now().isoformat())
+            try:
+                mlflow.log_metrics(scores)
+                mlflow.log_param("num_examples", len(eval_dataset))
+                mlflow.log_param("eval_timestamp", datetime.now().isoformat())
 
-            regressions = self._check_regression(scores)
-            if regressions:
-                logger.warning("REGRESSION DETECTED: %s", regressions)
-                mlflow.set_tag("regression_detected", "true")
-                mlflow.log_dict(regressions, "regressions.json")
-            else:
-                mlflow.set_tag("regression_detected", "false")
+                regressions = self._check_regression(scores)
+                if regressions:
+                    logger.warning("REGRESSION DETECTED: %s", regressions)
+                    mlflow.set_tag("regression_detected", "true")
+                    mlflow.log_dict(regressions, "regressions.json")
+                else:
+                    mlflow.set_tag("regression_detected", "false")
+            except Exception:
+                mlflow.set_tag("eval_error", "true")
+                raise
 
         self._update_history(scores)
         return scores
@@ -157,8 +169,12 @@ class RAGASTracker:
 
         output = self.baseline_path.parent / "ragas_trends.png"
         plt.savefig(output, dpi=150, bbox_inches="tight")
-        mlflow.log_artifact(str(output))
         logger.info("Trend plot saved: %s", output)
+        try:
+            with mlflow.start_run(run_name="ragas-trends"):
+                mlflow.log_artifact(str(output))
+        except Exception as exc:
+            logger.warning("Could not log trend artifact to MLflow: %s", exc)
 
 
 def build_eval_dataset(qa_pairs: list) -> Dataset:

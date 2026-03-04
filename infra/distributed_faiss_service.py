@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Dict, List
 
 import faiss
@@ -22,21 +23,38 @@ logger = logging.getLogger(__name__)
 
 # ─── Shard Server (runs as separate process per shard) ────────
 
-shard_app = FastAPI()
-embedder = EmbeddingModel()
+_embedder: EmbeddingModel | None = None
 shard_index = None
 shard_metadata = []
 SHARD_ID = int(os.environ.get("SHARD_ID", 0))
 SHARD_DATA_PATH = f"data/shards/shard_{SHARD_ID}"
 
 
-@shard_app.on_event("startup")
-def load_shard():
+def _get_embedder() -> EmbeddingModel:
+    """Lazy singleton — avoids loading the transformer at import time."""
+    global _embedder
+    if _embedder is None:
+        _embedder = EmbeddingModel()
+    return _embedder
+
+
+@asynccontextmanager
+async def _shard_lifespan(app: FastAPI):
+    """Load the FAISS shard index on startup; propagate errors so the process
+    fails fast instead of silently serving requests with a None index."""
     global shard_index, shard_metadata
-    shard_index = faiss.read_index(f"{SHARD_DATA_PATH}.index")
-    with open(f"{SHARD_DATA_PATH}_meta.json", encoding="utf-8") as f:
-        shard_metadata = json.load(f)
-    logger.info("Shard %d loaded: %d vectors", SHARD_ID, shard_index.ntotal)
+    try:
+        shard_index = faiss.read_index(f"{SHARD_DATA_PATH}.index")
+        with open(f"{SHARD_DATA_PATH}_meta.json", encoding="utf-8") as f:
+            shard_metadata = json.load(f)
+        logger.info("Shard %d loaded: %d vectors", SHARD_ID, shard_index.ntotal)
+    except Exception:
+        logger.exception("Failed to load shard %d from %s", SHARD_ID, SHARD_DATA_PATH)
+        raise
+    yield
+
+
+shard_app = FastAPI(lifespan=_shard_lifespan)
 
 
 class ShardSearchRequest(BaseModel):
@@ -90,7 +108,7 @@ async def distributed_search(request: AggregatorSearchRequest):
     Fan out query to all shards in parallel via asyncio.gather.
     Merge and re-rank results globally.
     """
-    query_vec = embedder.embed([request.query])[0].tolist()
+    query_vec = _get_embedder().embed([request.query])[0].tolist()
 
     shard_request = {"query_vector": query_vec, "top_k": request.top_k}
 
@@ -161,15 +179,17 @@ def build_shard_indexes(embeddings: np.ndarray, metadata: List[Dict], n_shards: 
         shard_emb = embeddings[start:end].astype(np.float32)
         shard_meta = metadata[start:end]
 
-        # IVFFlat for approximate search on each shard
+        # IVFFlat for approximate search on each shard.
+        # nlist must be >= 1; FAISS requires at least 39*nlist training points.
         dim = shard_emb.shape[1]
-        nlist = min(100, len(shard_emb) // 10)
+        nlist = max(1, min(100, len(shard_emb) // 10))
         quantizer = faiss.IndexFlatIP(dim)
 
-        if len(shard_emb) >= nlist * 10:
+        if len(shard_emb) >= nlist * 39:
             index = faiss.IndexIVFFlat(quantizer, dim, nlist, faiss.METRIC_INNER_PRODUCT)
             index.train(shard_emb)
         else:
+            # Too few vectors to train IVF — fall back to exact search.
             index = faiss.IndexFlatIP(dim)
 
         index.add(shard_emb)

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Dict, Optional
 
-import mlflow
+from mlops.compat import mlflow
 import ray
 import torch
 from datasets import Dataset
@@ -19,7 +19,7 @@ from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchTrainer, prepare_data_loader, prepare_model
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from transformers import AutoModelForMaskedLM, AutoTokenizer, get_cosine_schedule_with_warmup
+from transformers import AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup
 
 BASE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 OUTPUT_DIR = "models/ray-fault-tolerant"
@@ -31,7 +31,10 @@ def load_checkpoint(checkpoint: Optional[Checkpoint]) -> Dict:
         return {"epoch": 0, "global_step": 0, "best_loss": float("inf")}
 
     with checkpoint.as_directory() as checkpoint_dir:
-        state = torch.load(os.path.join(checkpoint_dir, "training_state.pt"))
+        state = torch.load(
+            os.path.join(checkpoint_dir, "training_state.pt"),
+            weights_only=True,
+        )
         print(f"Resumed from checkpoint: epoch={state['epoch']}, step={state['global_step']}")
         return state
 
@@ -79,7 +82,7 @@ def training_loop_per_worker(config: Dict):
     best_loss = state["best_loss"]
 
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
-    model = AutoModelForMaskedLM.from_pretrained(config["model_name"])
+    model = AutoModel.from_pretrained(config["model_name"])
 
     lora_config = LoraConfig(
         task_type=TaskType.FEATURE_EXTRACTION,
@@ -92,7 +95,10 @@ def training_loop_per_worker(config: Dict):
 
     if checkpoint is not None:
         with checkpoint.as_directory() as ckpt_dir:
-            state_dict = torch.load(os.path.join(ckpt_dir, "training_state.pt"))
+            state_dict = torch.load(
+                os.path.join(ckpt_dir, "training_state.pt"),
+                weights_only=True,
+            )
             model.load_state_dict(state_dict["model_state_dict"])
 
     model = prepare_model(model)
@@ -137,7 +143,10 @@ def training_loop_per_worker(config: Dict):
 
     if checkpoint is not None:
         with checkpoint.as_directory() as ckpt_dir:
-            state_dict = torch.load(os.path.join(ckpt_dir, "training_state.pt"))
+            state_dict = torch.load(
+                os.path.join(ckpt_dir, "training_state.pt"),
+                weights_only=True,
+            )
             optimizer.load_state_dict(state_dict["optimizer_state_dict"])
             scheduler.load_state_dict(state_dict["scheduler_state_dict"])
 
@@ -150,6 +159,11 @@ def training_loop_per_worker(config: Dict):
         for step, batch in enumerate(dataloader):
             try:
                 outputs = model(**batch)
+                if outputs.loss is None:
+                    raise RuntimeError(
+                        "Model returned no loss. Use AutoModelForMaskedLM or "
+                        "supply a custom loss function."
+                    )
                 loss = outputs.loss / config["grad_accumulation"]
                 loss.backward()
 

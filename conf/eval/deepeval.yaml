@@ -1,0 +1,4 @@
+frameworks:
+- deepeval
+faithfulness_min: 0.7
+hallucination_min: 0.8

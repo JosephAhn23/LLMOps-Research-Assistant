@@ -1,0 +1,4 @@
+name: ablation-retrieval
+description: FAISS-only retrieval, no BM25
+ablate_bm25: true
+seed: 42

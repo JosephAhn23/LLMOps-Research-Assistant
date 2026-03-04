@@ -4,6 +4,7 @@ LangGraph multi-agent orchestrator with dependency injection.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Dict, List, TypedDict
 
 from agents.protocols import Reranker, Retriever, Synthesizer
@@ -14,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 class AgentState(TypedDict):
     query: str
-    retrieved_chunks: List[Dict]
-    reranked_chunks: List[Dict]
+    retrieved_chunks: List[Dict[str, Any]]
+    reranked_chunks: List[Dict[str, Any]]
     response: Dict[str, Any]
     error: str
 
@@ -64,7 +65,7 @@ class Pipeline:
             return {**state, "error": str(exc)}
 
     def run(self, query: str) -> Dict[str, Any]:
-        with mlflow.start_run():
+        with mlflow.start_run(nested=mlflow.active_run() is not None):
             mlflow.log_param("query", query[:200])
             initial: AgentState = {
                 "query": query,
@@ -107,21 +108,24 @@ def should_continue(state: AgentState) -> str:
 # ---------------------------------------------------------------------------
 
 _default_pipeline: Pipeline | None = None
+_pipeline_lock = threading.Lock()
 
 
 def get_pipeline() -> Pipeline:
-    """Lazy singleton for use in API/Celery contexts."""
+    """Thread-safe lazy singleton for use in API/Celery contexts."""
     global _default_pipeline
     if _default_pipeline is None:
-        from agents.reranker import RerankerAgent
-        from agents.retriever import RetrieverAgent
-        from agents.synthesizer import SynthesizerAgent
+        with _pipeline_lock:
+            if _default_pipeline is None:
+                from agents.reranker import RerankerAgent
+                from agents.retriever import RetrieverAgent
+                from agents.synthesizer import SynthesizerAgent
 
-        _default_pipeline = Pipeline(
-            retriever=RetrieverAgent(top_k=10),
-            reranker=RerankerAgent(top_k=5),
-            synthesizer=SynthesizerAgent(),
-        )
+                _default_pipeline = Pipeline(
+                    retriever=RetrieverAgent(top_k=10),
+                    reranker=RerankerAgent(top_k=5),
+                    synthesizer=SynthesizerAgent(),
+                )
     return _default_pipeline
 
 

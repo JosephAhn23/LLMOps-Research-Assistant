@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: llmops-api
+    static_configs:
+      - targets: ['api:8000']
+    metrics_path: /metrics
+
+  - job_name: llmops-celery
+    static_configs:
+      - targets: ['celery-exporter:9540']
+
+  - job_name: dcgm-exporter
+    static_configs:
+      - targets: ['dcgm-exporter:9400']
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ['redis-exporter:9121']

@@ -1,0 +1,4 @@
+method: rlhf_ppo
+ppo_epochs: 1
+kl_penalty: 0.1
+learning_rate: 1.0e-05

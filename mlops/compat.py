@@ -54,6 +54,11 @@ except Exception:
         def log_artifact(*args, **kwargs):
             pass
 
+        @staticmethod
+        def active_run(*args, **kwargs):
+            """Always returns None — no active run when MLflow is absent."""
+            return None
+
         # pytorch sub-module stub
         pytorch = None
 

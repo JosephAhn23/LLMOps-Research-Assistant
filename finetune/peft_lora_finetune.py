@@ -54,6 +54,8 @@ class FinetuneConfig:
     bnb_4bit_compute_dtype: str = "bfloat16"
     mlflow_experiment: str = "peft-lora-finetune"
     mlflow_run_name: Optional[str] = None
+    dataset_name: str = "tatsu-lab/alpaca"
+    dataset_split: str = "train[:5000]"
 
 
 class PEFTLoRATrainer:
@@ -116,14 +118,24 @@ class PEFTLoRATrainer:
         return model
 
     def _prepare_dataset(self, tokenizer):
-        raw = load_dataset("tatsu-lab/alpaca", split="train[:5000]")
+        raw = load_dataset(self.config.dataset_name, split=self.config.dataset_split)
 
         def tokenize(ex):
-            prompt = (
-                f"### Instruction:\n{ex['instruction']}\n\n"
-                f"### Input:\n{ex.get('input', '')}\n\n"
-                f"### Response:\n{ex['output']}"
-            )
+            if "instruction" in ex and "output" in ex:
+                # Alpaca-style format
+                prompt = (
+                    f"### Instruction:\n{ex['instruction']}\n\n"
+                    f"### Input:\n{ex.get('input', '')}\n\n"
+                    f"### Response:\n{ex['output']}"
+                )
+            elif "text" in ex:
+                # Pre-formatted text column (e.g. HFDatasetPipeline output)
+                prompt = ex["text"]
+            else:
+                raise ValueError(
+                    f"Unsupported dataset columns: {list(ex.keys())}. "
+                    "Expected 'instruction'+'output' (Alpaca) or 'text'."
+                )
             return tokenizer(
                 prompt,
                 truncation=True,
@@ -148,6 +160,10 @@ class PEFTLoRATrainer:
             model = self._inject_lora(model)
             dataset = self._prepare_dataset(tokenizer)
 
+            # Match training precision to the BitsAndBytes compute dtype.
+            # bf16=True is correct for Ampere+ GPUs (A100/H100) with bfloat16.
+            # fp16=True is correct for older GPUs with float16.
+            use_bf16 = self.config.bnb_4bit_compute_dtype == "bfloat16"
             args = TrainingArguments(
                 output_dir=self.config.output_dir,
                 num_train_epochs=self.config.num_epochs,
@@ -156,7 +172,8 @@ class PEFTLoRATrainer:
                 learning_rate=self.config.learning_rate,
                 lr_scheduler_type=self.config.lr_scheduler_type,
                 warmup_ratio=self.config.warmup_ratio,
-                fp16=True,
+                bf16=use_bf16,
+                fp16=not use_bf16,
                 logging_steps=10,
                 save_strategy="epoch",
                 report_to="mlflow",

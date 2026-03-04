@@ -4,14 +4,14 @@ Covers: Distributed training (Ray), replaces single-node training
 """
 import json
 
-import mlflow
+from mlops.compat import mlflow
 import ray
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
 from ray import train
 from ray.train import CheckpointConfig, RunConfig, ScalingConfig
 from ray.train.huggingface import TransformersTrainer
-from transformers import AutoModelForMaskedLM, AutoTokenizer, TrainingArguments
+from transformers import AutoModel, AutoTokenizer, TrainingArguments
 
 BASE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 NUM_WORKERS = 4
@@ -30,7 +30,11 @@ def get_trainer_per_worker(config: dict):
     data_path = config["data_path"]
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForMaskedLM.from_pretrained(model_name)
+    # NOTE: AutoModel (bare encoder) does not produce outputs.loss.
+    # The HuggingFace Trainer will raise AttributeError on the first step.
+    # Switch to AutoModelForMaskedLM for MLM loss, or implement a custom
+    # Trainer.compute_loss() for contrastive/similarity objectives.
+    model = AutoModel.from_pretrained(model_name)
 
     lora_config = LoraConfig(
         task_type=TaskType.FEATURE_EXTRACTION,

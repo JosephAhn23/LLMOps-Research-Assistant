@@ -14,7 +14,14 @@ from openai import OpenAI
 
 from mlops.compat import mlflow
 
-client = OpenAI()
+_client: OpenAI | None = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI()
+    return _client
 
 
 class AttackType(Enum):
@@ -140,11 +147,12 @@ Input: {text[:500]}
 
 Respond ONLY with JSON: {{"is_adversarial": true/false, "confidence": 0.0-1.0, "attack_type": "string or null", "reasoning": "brief"}}"""
 
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             temperature=0.0,
+            timeout=5.0,
         )
 
         try:
@@ -238,7 +246,7 @@ Model response: {response[:300]}
 
 Respond ONLY with JSON: {{"passed": true/false, "confidence": 0.0-1.0, "reason": "brief"}}"""
 
-        result = client.chat.completions.create(
+        result = _get_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=100,

@@ -7,13 +7,14 @@ import json
 from pathlib import Path
 
 from datasets import Dataset
-import mlflow
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from peft import get_peft_model, LoraConfig, TaskType
 from transformers import AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling
+
+from mlops.compat import mlflow
 
 BASE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 OUTPUT_DIR = "models/finetuned-embedder"
@@ -94,6 +95,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
     finetune(args.data_path, epochs=args.epochs, lora_rank=args.lora_rank, model_name=args.model_name)
+
+
+if __name__ == "__main__":
+    main()

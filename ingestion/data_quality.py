@@ -74,7 +74,8 @@ class DataQualityFilter:
         return self.assess(text).passed
 
     def assess_dataframe(self, df: pd.DataFrame, text_col: str = "text") -> pd.DataFrame:
-        """Vectorized quality assessment over a DataFrame."""
+        """Vectorized quality assessment over a DataFrame. Returns a new DataFrame."""
+        df = df.copy()
         metrics = df[text_col].apply(lambda t: self.assess(t))
         df["avg_word_length"] = metrics.apply(lambda m: m.avg_word_length)
         df["digit_ratio"] = metrics.apply(lambda m: m.digit_ratio)
@@ -100,11 +101,19 @@ class Deduplicator:
         return hashlib.sha256(normalized.encode()).hexdigest()
 
     def ngram_hash(self, text: str) -> str:
-        """N-gram fingerprint for near-duplicate detection."""
+        """N-gram fingerprint for near-duplicate detection.
+
+        Samples up to 200 n-grams uniformly across the full document so that
+        documents with identical openings but different bodies are not
+        incorrectly flagged as near-duplicates.
+        """
         words = text.lower().split()
         ngrams = [" ".join(words[i : i + self.ngram_size]) for i in range(len(words) - self.ngram_size + 1)]
-        fingerprint = "|".join(sorted(set(ngrams[:50])))
-        return hashlib.md5(fingerprint.encode()).hexdigest()
+        # Uniform stride sampling — covers the whole document, not just the prefix.
+        step = max(1, len(ngrams) // 200)
+        sampled = ngrams[::step][:200]
+        fingerprint = "|".join(sorted(set(sampled)))
+        return hashlib.sha256(fingerprint.encode()).hexdigest()
 
     def deduplicate_dataframe(self, df: pd.DataFrame, text_col: str = "text") -> Tuple[pd.DataFrame, Dict]:
         """Remove exact + near-duplicates from DataFrame."""

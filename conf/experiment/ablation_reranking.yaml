@@ -1,0 +1,4 @@
+name: ablation-reranking
+description: Hybrid retrieval without cross-encoder reranking
+ablate_reranking: true
+seed: 42

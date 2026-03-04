@@ -11,7 +11,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import (
-    AutoModelForMaskedLM,
+    AutoModel,
     AutoTokenizer,
     DataCollatorWithPadding,
     get_linear_schedule_with_warmup,
@@ -58,7 +58,7 @@ def run_accelerate_finetune(
     )
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
-    model = AutoModelForMaskedLM.from_pretrained(BASE_MODEL)
+    model = AutoModel.from_pretrained(BASE_MODEL)
 
     lora_config = LoraConfig(
         task_type=TaskType.FEATURE_EXTRACTION,
@@ -105,6 +105,11 @@ def run_accelerate_finetune(
         for step, batch in enumerate(dataloader):
             with accelerator.accumulate(model):
                 outputs = model(**batch)
+                if outputs.loss is None:
+                    raise RuntimeError(
+                        "Model returned no loss. Use AutoModelForMaskedLM or "
+                        "supply a custom loss function."
+                    )
                 loss = outputs.loss
 
                 accelerator.backward(loss)

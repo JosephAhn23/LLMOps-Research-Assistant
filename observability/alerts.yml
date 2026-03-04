@@ -1,0 +1,47 @@
+groups:
+  - name: llmops-api
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(llmops_errors_total[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on LLMOps API"
+          description: "Error rate is {{ $value | humanize }}/s over the last 5 minutes."
+
+      - alert: HighP99Latency
+        expr: histogram_quantile(0.99, sum(rate(llmops_http_request_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 HTTP latency exceeds 5s"
+          description: "p99 latency is {{ $value | humanizeDuration }}."
+
+      - alert: RAGASFaithfulnessDrop
+        expr: llmops_ragas_faithfulness < 0.65
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RAGAS faithfulness below threshold"
+          description: "Faithfulness score is {{ $value | humanize }} (threshold: 0.65)."
+
+      - alert: QueueDepthHigh
+        expr: llmops_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Celery queue depth is high"
+          description: "Queue {{ $labels.queue_name }} has {{ $value }} pending tasks."
+
+      - alert: APIDown
+        expr: up{job="llmops-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLMOps API is down"
+          description: "Prometheus cannot scrape the LLMOps API /metrics endpoint."

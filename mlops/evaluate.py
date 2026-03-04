@@ -37,7 +37,7 @@ def evaluate_pipeline(test_cases: List[Dict]) -> Dict:
 
     missing = _REQUIRED_COLUMNS - set(test_cases[0].keys())
     if missing:
-        raise ValueError(f"test_cases entries are missing required columns: {missing}")
+        raise ValueError(f"Missing required columns: {missing}")
 
     dataset = Dataset.from_list(test_cases)
 

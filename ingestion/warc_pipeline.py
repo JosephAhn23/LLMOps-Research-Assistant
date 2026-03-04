@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import io
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional
@@ -16,6 +17,8 @@ import langdetect
 import pandas as pd
 import requests
 from warcio.archiveiterator import ArchiveIterator
+
+logger = logging.getLogger(__name__)
 
 CC_INDEX_URL = "https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-10/wet.paths.gz"
 CC_S3_BUCKET = "commoncrawl"
@@ -53,11 +56,16 @@ class WARCIngestionPipeline:
     Handles language detection, domain scoring, deduplication at scale.
     """
 
+    # Maximum number of hashes to keep in memory per pipeline instance.
+    # Each SHA-256 hex digest is 64 bytes; 500k entries ≈ 32 MB.
+    _MAX_SEEN_HASHES = 500_000
+
     def __init__(self, target_languages: set = TARGET_LANGUAGES, n_workers: int = 4):
         self.target_languages = target_languages
         self.n_workers = n_workers
         self.s3 = boto3.client("s3", region_name="us-east-1")
         self.seen_hashes: set = set()
+        self._hash_lock = threading.Lock()
         self._low_quality_re = re.compile("|".join(LOW_QUALITY_PATTERNS), re.IGNORECASE)
 
     def get_warc_paths(self, limit: int = 10) -> List[str]:
@@ -82,7 +90,7 @@ class WARCIngestionPipeline:
         except Exception:
             return "low"
 
-        if any(hq in domain for hq in HIGH_QUALITY_DOMAINS):
+        if any(domain == hq or domain.endswith("." + hq) for hq in HIGH_QUALITY_DOMAINS):
             return "high"
         if self._low_quality_re.search(url):
             return "low"
@@ -128,9 +136,18 @@ class WARCIngestionPipeline:
                 continue
 
             doc_hash = hashlib.sha256(text.encode()).hexdigest()
-            if doc_hash in self.seen_hashes:
-                continue
-            self.seen_hashes.add(doc_hash)
+            with self._hash_lock:
+                if doc_hash in self.seen_hashes:
+                    continue
+                # Evict oldest entries when the cap is reached to bound memory.
+                if len(self.seen_hashes) >= self._MAX_SEEN_HASHES:
+                    self.seen_hashes.clear()
+                    logger.warning(
+                        "seen_hashes cap (%d) reached; cleared to prevent OOM. "
+                        "Consider using a shared Redis set for cross-worker deduplication.",
+                        self._MAX_SEEN_HASHES,
+                    )
+                self.seen_hashes.add(doc_hash)
 
             quality_tier = self._score_domain(url)
             domain = urlparse(url).netloc
@@ -195,6 +212,9 @@ class WARCIngestionPipeline:
 
     def _log_dataset_stats(self, df: pd.DataFrame):
         """Log corpus statistics."""
+        if df.empty:
+            print("No documents collected — corpus is empty.")
+            return
         print("\n=== Corpus Statistics ===")
         print(f"Total documents: {len(df):,}")
         print(f"Languages:\n{df['language'].value_counts()}")

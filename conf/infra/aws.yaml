@@ -1,0 +1,5 @@
+environment: prod
+cloud: aws
+aws_region: us-east-1
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI}
+kafka_bootstrap: ${oc.env:KAFKA_BOOTSTRAP_SERVERS}

@@ -1,0 +1,4 @@
+method: dpo
+num_epochs: 1
+learning_rate: 5.0e-05
+beta: 0.1

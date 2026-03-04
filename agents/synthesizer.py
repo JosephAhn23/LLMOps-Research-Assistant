@@ -117,10 +117,11 @@ class SynthesizerAgent:
                     messages=messages,
                     max_tokens=self.max_tokens,
                     temperature=0.2,
+                    timeout=float(os.getenv("OPENAI_TIMEOUT_S", "30")),
                 )
                 usage = response.usage
                 return {
-                    "answer": response.choices[0].message.content,
+                    "answer": response.choices[0].message.content or "",
                     "sources": [c["source"] for c in context_chunks],
                     "tokens_used": usage.total_tokens,
                     "prompt_tokens": usage.prompt_tokens,

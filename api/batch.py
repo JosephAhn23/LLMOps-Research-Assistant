@@ -169,9 +169,16 @@ def process_query_task(self, job_id: str, query: str) -> Dict:
         redis_client.expire(f"job:{job_id}", 3600)
         return result
 
-    except SoftTimeLimitExceeded:
-        logger.warning(f"Soft timeout hit for job {job_id}")
-        raise self.retry(countdown=5, max_retries=2)
+    except SoftTimeLimitExceeded as exc:
+        logger.warning("Soft timeout hit for job %s (attempt %d)", job_id, self.request.retries + 1)
+        if self.request.retries >= 2:
+            dead_letter_task.apply_async(
+                args=[job_id, query, "SoftTimeLimitExceeded", self.request.id],
+                queue="dead_letter",
+            )
+            redis_client.hset(f"job:{job_id}", "_status", "failed")
+            raise MaxRetriesExceededError(f"Timeout: task {job_id} permanently failed") from exc
+        raise self.retry(exc=exc, countdown=5)
 
     except Exception as exc:
         retry_count = self.request.retries
@@ -249,9 +256,16 @@ def process_query_priority_task(self, job_id: str, query: str) -> Dict:
         redis_client.expire(f"job:{job_id}", 3600)
         return result
 
-    except SoftTimeLimitExceeded:
-        logger.warning("Soft timeout hit for priority job %s", job_id)
-        raise self.retry(countdown=2, max_retries=2)
+    except SoftTimeLimitExceeded as exc:
+        logger.warning("Soft timeout hit for priority job %s (attempt %d)", job_id, self.request.retries + 1)
+        if self.request.retries >= 2:
+            dead_letter_task.apply_async(
+                args=[job_id, query, "SoftTimeLimitExceeded", self.request.id],
+                queue="dead_letter",
+            )
+            redis_client.hset(f"job:{job_id}", "_status", "failed")
+            raise MaxRetriesExceededError(f"Timeout: priority task {job_id} permanently failed") from exc
+        raise self.retry(exc=exc, countdown=2)
 
     except Exception as exc:
         retry_count = self.request.retries
@@ -276,6 +290,9 @@ def enqueue_batch_job(
     priority: bool = False,
 ) -> Dict:
     """Enqueue batch with optional priority routing."""
+    if not queries:
+        raise ValueError("queries list must not be empty")
+
     redis_client.hset(
         f"job:{job_id}",
         mapping={
@@ -284,6 +301,9 @@ def enqueue_batch_job(
             "_queued_at": str(time.time()),
         },
     )
+    # Set TTL immediately so orphaned keys (e.g. if apply_async fails) are
+    # cleaned up automatically rather than living in Redis forever.
+    redis_client.expire(f"job:{job_id}", 3600)
 
     task_fn = process_query_priority_task if priority else process_query_task
 
@@ -321,7 +341,13 @@ def get_job_status(job_id: str) -> Dict:
 def get_dead_letter_queue(limit: int = 100) -> list:
     """Inspect permanently failed tasks."""
     items = redis_client.lrange("dead_letter_queue", 0, limit - 1)
-    return [json.loads(item) for item in items]
+    results = []
+    for item in items:
+        try:
+            results.append(json.loads(item))
+        except (json.JSONDecodeError, TypeError) as exc:
+            logger.warning("Malformed DLQ entry skipped: %s", exc)
+    return results
 
 
 def retry_dead_letter(job_id: str, query: str):

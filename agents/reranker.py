@@ -110,7 +110,9 @@ class CrossEncoderReranker:
                 ).to(self.device)
 
                 logits = self.model(**encoded).logits.squeeze(-1)
-                scores = logits.cpu().tolist()
+                # Normalize raw logits to [0, 1] via sigmoid so rerank_score
+                # is comparable to retrieval_score (cosine similarity in [0, 1]).
+                scores = self._torch.sigmoid(logits).cpu().tolist()
                 if isinstance(scores, float):
                     scores = [scores]
                 all_scores.extend(scores)

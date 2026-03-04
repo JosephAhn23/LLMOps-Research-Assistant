@@ -53,10 +53,11 @@ class DistributedFAISSIndex:
             shard_meta = metadata[start:end]
 
             if len(shard_emb) < NLIST:
-                quantizer = faiss.IndexFlatIP(self.dim)
-                index = faiss.IndexIDMap(quantizer)
-                ids = np.arange(len(shard_emb)).astype(np.int64)
-                index.add_with_ids(shard_emb, ids)
+                # Too few vectors to train IVF — use exact flat search.
+                # IndexIDMap is avoided here because _search_shard indexes
+                # results by position, not by stored ID.
+                index = faiss.IndexFlatIP(self.dim)
+                index.add(shard_emb.astype(np.float32))
             else:
                 index = self._build_shard(shard_emb, shard_meta)
 

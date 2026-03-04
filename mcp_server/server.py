@@ -143,9 +143,9 @@ async def call_tool(
             result = await _handle_benchmark(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
-    except Exception:
+    except Exception as exc:
         logger.exception("Tool %s failed", name)
-        result = {"error": f"Tool {name} failed"}
+        result = {"error": f"Tool {name} failed: {type(exc).__name__}: {exc}"}
 
     return [
         types.TextContent(type="text", text=json.dumps(result, indent=2))
@@ -166,6 +166,7 @@ async def _handle_retrieve(args: dict) -> dict:
             },
             timeout=30.0,
         )
+        response.raise_for_status()
         return response.json()
 
 
@@ -182,11 +183,17 @@ async def _handle_ingest(args: dict) -> dict:
             },
             timeout=60.0,
         )
+        response.raise_for_status()
         return response.json()
 
 
 async def _handle_evaluate(args: dict) -> dict:
-    """Run RAGAS evaluation metrics on a RAG response."""
+    """Run RAGAS evaluation metrics on a RAG response.
+
+    ragas.evaluate() is synchronous and makes multiple OpenAI API calls, so it
+    is offloaded to a thread to avoid blocking the MCP server event loop.
+    """
+    import asyncio
     from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import answer_relevancy, context_precision, faithfulness
@@ -196,9 +203,8 @@ async def _handle_evaluate(args: dict) -> dict:
         "answer": [args["answer"]],
         "contexts": [args["contexts"]],
     })
-    result = evaluate(
-        data, metrics=[faithfulness, answer_relevancy, context_precision]
-    )
+    metrics = [faithfulness, answer_relevancy, context_precision]
+    result = await asyncio.to_thread(evaluate, data, metrics=metrics)
     return {
         "faithfulness": float(result["faithfulness"]),
         "answer_relevancy": float(result["answer_relevancy"]),
@@ -207,24 +213,30 @@ async def _handle_evaluate(args: dict) -> dict:
 
 
 async def _handle_list_models() -> dict:
-    """List registered models from SageMaker model registry."""
+    """List all registered models from SageMaker model registry (paginated)."""
+    import asyncio
     import boto3
 
-    sm = boto3.client("sagemaker")
-    response = sm.list_model_packages(
-        ModelPackageGroupName="llmops-research-assistant"
-    )
-    return {
-        "models": [
-            {
-                "arn": pkg["ModelPackageArn"],
-                "version": pkg["ModelPackageVersion"],
-                "status": pkg["ModelApprovalStatus"],
-                "created": str(pkg["CreationTime"]),
-            }
-            for pkg in response["ModelPackageSummaryList"]
-        ]
-    }
+    def _fetch_all() -> list:
+        sm = boto3.client("sagemaker")
+        paginator = sm.get_paginator("list_model_packages")
+        models = []
+        for page in paginator.paginate(
+            ModelPackageGroupName="llmops-research-assistant",
+            SortBy="CreationTime",
+            SortOrder="Descending",
+        ):
+            for pkg in page["ModelPackageSummaryList"]:
+                models.append({
+                    "arn": pkg["ModelPackageArn"],
+                    "version": pkg["ModelPackageVersion"],
+                    "status": pkg["ModelApprovalStatus"],
+                    "created": str(pkg["CreationTime"]),
+                })
+        return models
+
+    models = await asyncio.to_thread(_fetch_all)
+    return {"models": models}
 
 
 async def _handle_benchmark(args: dict) -> dict:
@@ -237,6 +249,7 @@ async def _handle_benchmark(args: dict) -> dict:
             json=args,
             timeout=300.0,
         )
+        response.raise_for_status()
         return response.json()
 
 

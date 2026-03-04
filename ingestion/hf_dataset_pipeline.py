@@ -135,6 +135,10 @@ class HFDatasetPipeline:
             logger.warning("datasketch not available, skipping MinHash dedup")
             return ds
 
+        logger.warning(
+            "_minhash_dedup runs single-threaded; for large datasets consider "
+            "a distributed dedup pass (e.g. datatrove or Spark)."
+        )
         lsh = MinHashLSH(
             threshold=self.config.dedup_threshold, num_perm=128
         )
@@ -150,7 +154,10 @@ class HFDatasetPipeline:
             for ng in ngrams:
                 m.update(ng.encode("utf8"))
 
-            key = hashlib.md5(text[:100].encode()).hexdigest()
+            # Prefix with index to guarantee uniqueness even if two different
+            # texts produce the same SHA-256 digest (astronomically unlikely
+            # but architecturally prevents a ValueError from datasketch).
+            key = f"{i}:{hashlib.sha256(text.encode()).hexdigest()}"
             if not lsh.query(m):
                 lsh.insert(key, m)
                 keep_indices.append(i)
@@ -166,7 +173,7 @@ class HFDatasetPipeline:
             self.config.min_token_length <= length <= self.config.max_token_length
             for length in lengths
         ]
-        return {
+        result = {
             "input_ids": [
                 ids[: self.config.max_token_length]
                 for ids in tokenized["input_ids"]
@@ -177,6 +184,14 @@ class HFDatasetPipeline:
             ],
             "length_ok": length_ok,
         }
+        # BERT-family tokenizers also produce token_type_ids; preserve and
+        # truncate them to avoid shape mismatches in the data collator.
+        if "token_type_ids" in tokenized:
+            result["token_type_ids"] = [
+                t[: self.config.max_token_length]
+                for t in tokenized["token_type_ids"]
+            ]
+        return result
 
 
 if __name__ == "__main__":

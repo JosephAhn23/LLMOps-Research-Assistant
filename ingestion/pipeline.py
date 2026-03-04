@@ -7,12 +7,18 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# Protects the FAISS index read-modify-write so concurrent /ingest requests
+# (dispatched via asyncio.to_thread) cannot corrupt the index or de-sync it
+# from the metadata file.
+_index_lock = threading.Lock()
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
@@ -73,6 +79,11 @@ class EmbeddingModel:
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
+    if overlap >= chunk_size:
+        raise ValueError(
+            f"overlap ({overlap}) must be less than chunk_size ({chunk_size}); "
+            "check CHUNK_SIZE and CHUNK_OVERLAP environment variables."
+        )
     words = text.split()
     chunks = []
     start = 0
@@ -98,7 +109,7 @@ class IngestionPipeline:
         for doc in docs:
             chunks = chunk_text(doc["text"])
             for i, chunk in enumerate(chunks):
-                chunk_id = hashlib.md5(f"{doc['id']}_{i}".encode()).hexdigest()
+                chunk_id = hashlib.sha256(f"{doc['id']}_{i}".encode()).hexdigest()
                 all_chunks.append(chunk)
                 all_meta.append({
                     "chunk_id": chunk_id,
@@ -108,27 +119,44 @@ class IngestionPipeline:
                     "text": chunk,
                 })
 
-        logger.info("Embedding %d chunks...", len(all_chunks))
-        embeddings = self.embedder.embed(all_chunks)
-
-        dim = embeddings.shape[1]
         import faiss
 
-        if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
-            # Append to the existing index so prior documents are preserved.
-            self.index = faiss.read_index(INDEX_PATH)
-            with open(META_PATH, encoding="utf-8") as f:
-                existing_meta = json.load(f)
-        else:
-            self.index = faiss.IndexFlatIP(dim)  # inner product = cosine on normalized vecs
-            existing_meta = []
+        with _index_lock:
+            if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
+                # Append to the existing index so prior documents are preserved.
+                self.index = faiss.read_index(INDEX_PATH)
+                with open(META_PATH, encoding="utf-8") as f:
+                    existing_meta = json.load(f)
+            else:
+                existing_meta = []
 
-        self.index.add(embeddings)
-        self.metadata = existing_meta + all_meta
+            # Deduplicate: skip chunks whose chunk_id is already in the index.
+            existing_ids = {m["chunk_id"] for m in existing_meta}
+            new_pairs = [
+                (chunk, meta)
+                for chunk, meta in zip(all_chunks, all_meta)
+                if meta["chunk_id"] not in existing_ids
+            ]
+            if not new_pairs:
+                logger.info("All chunks already indexed — skipping.")
+                return
+            all_chunks, all_meta = zip(*new_pairs)
 
-        faiss.write_index(self.index, INDEX_PATH)
-        with open(META_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.metadata, f)
+        logger.info("Embedding %d new chunks...", len(all_chunks))
+        embeddings = self.embedder.embed(list(all_chunks))
+
+        dim = embeddings.shape[1]
+
+        with _index_lock:
+            if self.index is None:
+                self.index = faiss.IndexFlatIP(dim)  # inner product = cosine on normalized vecs
+
+            self.index.add(embeddings)
+            self.metadata = existing_meta + list(all_meta)
+
+            faiss.write_index(self.index, INDEX_PATH)
+            with open(META_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.metadata, f)
 
         logger.info(
             "Indexed %d new chunks (total: %d) into FAISS.",

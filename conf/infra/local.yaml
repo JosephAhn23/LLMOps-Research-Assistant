@@ -1,0 +1,4 @@
+environment: local
+cloud: local
+mlflow_tracking_uri: http://localhost:5000
+kafka_bootstrap: localhost:9092

@@ -3,6 +3,7 @@ Embedding-based semantic adversarial detection.
 Uses cosine similarity + anomaly detection + confidence fusion.
 """
 import hashlib
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -207,17 +208,21 @@ class SemanticSafetyDetector:
         self.library: AttackEmbeddingLibrary | None = None
         self.anomaly_detector: AnomalyDetector | None = None
         self._initialized = False
+        self._init_lock = threading.Lock()
 
     def _ensure_initialized(self):
         if self._initialized:
             return
-        from ingestion.pipeline import EmbeddingModel
+        with self._init_lock:
+            if self._initialized:  # double-checked locking
+                return
+            from ingestion.pipeline import EmbeddingModel
 
-        self.embedder = self._embedder_override or EmbeddingModel()
-        self.library = AttackEmbeddingLibrary(self.embedder)
-        self.anomaly_detector = AnomalyDetector()
-        self._build_or_load()
-        self._initialized = True
+            self.embedder = self._embedder_override or EmbeddingModel()
+            self.library = AttackEmbeddingLibrary(self.embedder)
+            self.anomaly_detector = AnomalyDetector()
+            self._build_or_load()
+            self._initialized = True
 
     def _build_or_load(self):
         try:

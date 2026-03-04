@@ -6,14 +6,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import uuid
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from typing import Any, Dict
 
 from agents.orchestrator import run_pipeline
+from api.batch import enqueue_batch_job
 from api.websocket_streaming import router as websocket_router
 
 logger = logging.getLogger(__name__)
@@ -53,24 +56,31 @@ app.include_router(websocket_router)
 
 
 class QueryRequest(BaseModel):
-    query: str
+    query: str = Field(..., min_length=1, max_length=4096)
     stream: bool = False
 
 
 class BatchRequest(BaseModel):
-    queries: list[str]
+    queries: list[str] = Field(..., min_length=1, max_length=100)
 
 
 class RetrieveRequest(BaseModel):
-    query: str
-    top_k: int = 5
+    query: str = Field(..., min_length=1, max_length=4096)
+    top_k: int = Field(default=5, ge=1, le=100)
     rerank: bool = True
 
 
 class IngestRequest(BaseModel):
     content: str
-    metadata: dict = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     chunk_size: int = 512
+
+    @field_validator("content")
+    @classmethod
+    def content_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("content must not be empty or whitespace-only")
+        return v
 
 
 @app.post("/retrieve", dependencies=[Security(_require_api_key)])
@@ -85,14 +95,26 @@ async def retrieve(request: RetrieveRequest):
     return {"results": chunks[: request.top_k]}
 
 
+_ingestion_pipeline = None
+_ingestion_lock = threading.Lock()
+
+
+def _get_ingestion_pipeline():
+    global _ingestion_pipeline
+    if _ingestion_pipeline is None:
+        with _ingestion_lock:
+            if _ingestion_pipeline is None:
+                from ingestion.pipeline import IngestionPipeline
+                _ingestion_pipeline = IngestionPipeline()
+    return _ingestion_pipeline
+
+
 @app.post("/ingest", dependencies=[Security(_require_api_key)])
 async def ingest(request: IngestRequest):
     """Ingest a document into the FAISS index — used by the MCP server."""
-    from ingestion.pipeline import IngestionPipeline
-
     doc_id = str(uuid.uuid4())
     source = (request.metadata or {}).get("source", doc_id)
-    pipeline = IngestionPipeline()
+    pipeline = _get_ingestion_pipeline()
     await asyncio.to_thread(
         pipeline.ingest_documents,
         [{"id": doc_id, "text": request.content, "source": source}],
@@ -114,14 +136,14 @@ async def query_realtime(request: QueryRequest):
 
 @app.post("/batch", dependencies=[Security(_require_api_key)])
 async def query_batch(request: BatchRequest, background_tasks: BackgroundTasks):
-    from api.batch import enqueue_batch_job
-
     job_id = str(uuid.uuid4())
-    background_tasks.add_task(enqueue_batch_job, job_id, request.queries)
+    # enqueue_batch_job performs synchronous Redis + Celery I/O; run it in a
+    # thread so it does not block the async event loop.
+    background_tasks.add_task(asyncio.to_thread, enqueue_batch_job, job_id, request.queries)
     return {"job_id": job_id, "status": "queued"}
 
 
-@app.get("/batch/{job_id}")
+@app.get("/batch/{job_id}", dependencies=[Security(_require_api_key)])
 async def get_batch_status(job_id: str):
     from api.batch import get_job_status
 

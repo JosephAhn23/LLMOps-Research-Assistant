@@ -14,7 +14,17 @@ from openai import AsyncOpenAI
 from agents.synthesizer import SYSTEM_PROMPT
 
 router = APIRouter()
-client = AsyncOpenAI()
+
+# Lazy-initialized so that missing OPENAI_API_KEY at import time does not
+# crash the entire FastAPI app during test collection or Docker build.
+_openai_client: Optional[AsyncOpenAI] = None
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI()
+    return _openai_client
 
 
 class ConnectionManager:
@@ -22,15 +32,18 @@ class ConnectionManager:
 
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
+        self._lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket) -> str:
         await websocket.accept()
         conn_id = str(uuid.uuid4())
-        self.active_connections[conn_id] = websocket
+        async with self._lock:
+            self.active_connections[conn_id] = websocket
         return conn_id
 
-    def disconnect(self, conn_id: str):
-        self.active_connections.pop(conn_id, None)
+    async def disconnect(self, conn_id: str):
+        async with self._lock:
+            self.active_connections.pop(conn_id, None)
 
     async def send(self, conn_id: str, data: dict):
         ws = self.active_connections.get(conn_id)
@@ -39,37 +52,19 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
-_retriever = None
-_reranker = None
-
-
-def _get_retriever():
-    global _retriever
-    if _retriever is None:
-        from agents.retriever import RetrieverAgent
-
-        _retriever = RetrieverAgent(top_k=10)
-    return _retriever
-
-
-def _get_reranker():
-    global _reranker
-    if _reranker is None:
-        from agents.reranker import RerankerAgent
-
-        _reranker = RerankerAgent(top_k=5)
-    return _reranker
 
 
 async def stream_rag_response(query: str) -> AsyncIterator[str]:
     """
     Full RAG pipeline with streaming LLM output.
-    Retrieval + reranking happen upfront, then LLM streams tokens.
+    Retrieval + reranking are delegated to the shared orchestrator singleton
+    so only one copy of each model is loaded per process.
     """
-    retriever = _get_retriever()
-    reranker = _get_reranker()
-    chunks = retriever.retrieve(query)
-    reranked = reranker.rerank(query, chunks)
+    from agents.orchestrator import get_pipeline
+
+    pipeline = get_pipeline()
+    chunks = await asyncio.to_thread(pipeline.retriever.retrieve, query)
+    reranked = await asyncio.to_thread(pipeline.reranker.rerank, query, chunks)
 
     context_str = ""
     for i, chunk in enumerate(reranked):
@@ -80,7 +75,7 @@ async def stream_rag_response(query: str) -> AsyncIterator[str]:
         {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"},
     ]
 
-    stream = await client.chat.completions.create(
+    stream = await _get_openai_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
         max_tokens=1024,
@@ -148,7 +143,7 @@ async def websocket_query(websocket: WebSocket):
                 await manager.send(conn_id, {"type": "error", "message": str(e)})
 
     except (WebSocketDisconnect, asyncio.TimeoutError):
-        manager.disconnect(conn_id)
+        await manager.disconnect(conn_id)
 
 
 @router.websocket("/ws/batch-progress")
@@ -160,11 +155,17 @@ async def websocket_batch_progress(websocket: WebSocket):
 
     try:
         raw = await websocket.receive_text()
-        request = json.loads(raw)
+        try:
+            request = json.loads(raw)
+        except json.JSONDecodeError:
+            await manager.send(conn_id, {"type": "error", "message": "invalid JSON"})
+            await manager.disconnect(conn_id)
+            return
         job_id = request.get("job_id")
 
         if not job_id:
             await manager.send(conn_id, {"type": "error", "message": "missing job_id"})
+            await manager.disconnect(conn_id)
             return
 
         from api.batch import get_job_status
@@ -177,4 +178,4 @@ async def websocket_batch_progress(websocket: WebSocket):
             await asyncio.sleep(0.5)
 
     except WebSocketDisconnect:
-        manager.disconnect(conn_id)
+        await manager.disconnect(conn_id)
