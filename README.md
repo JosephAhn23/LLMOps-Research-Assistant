@@ -2,13 +2,11 @@
 
 # LLMOps Research Assistant
 
-> A production RAG + LLMOps stack for teams that need faster, cheaper, and auditable research answers in real deployment conditions.
-[![Live Demo Video](https://img.shields.io/badge/Live_Demo-Video_Available-2ea44f?style=for-the-badge)](https://github.com/JosephAhn23/LLMOps-Research-Assistant/raw/main/assets/quick_demo.mp4)
-**Live Test Demo:** [Watch Video](https://github.com/JosephAhn23/LLMOps-Research-Assistant/raw/main/assets/quick_demo.mp4) | [Repo](https://github.com/JosephAhn23/LLMOps-Research-Assistant) | [Deployment Checklist](docs/live_demo_checklist.md)
-**Headline metric:** `3ms vector search · 0.847 RAGAS faithfulness · 250x cost reduction vs GPT-4o`
-<video src="assets/quick_demo.mp4" controls muted loop playsinline width="900"></video>
-*If the embedded player does not render in your browser, use the direct file link: [quick_demo.mp4](https://github.com/JosephAhn23/LLMOps-Research-Assistant/raw/main/assets/quick_demo.mp4).*
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org) [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com) [![MLflow](https://img.shields.io/badge/MLflow-0194E2?style=for-the-badge&logo=mlflow&logoColor=white)](https://mlflow.org) [![AWS](https://img.shields.io/badge/AWS-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com) [![Azure](https://img.shields.io/badge/Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://azure.microsoft.com)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![MLflow](https://img.shields.io/badge/MLflow-0194E2?style=for-the-badge&logo=mlflow&logoColor=white)](https://mlflow.org)
+[![AWS](https://img.shields.io/badge/AWS-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com)
+[![Azure](https://img.shields.io/badge/Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://azure.microsoft.com)
 
 <br>
 
