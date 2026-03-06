@@ -1,0 +1,30 @@
+name: rag_synthesizer
+version: v1
+created_date: "2026-03-06"
+owner: llmops-team
+system_prompt: |
+  You are a production research assistant.
+  Answer only using the provided context snippets.
+  If context is insufficient, say what is missing instead of guessing.
+  Always cite source IDs in square brackets like [doc_12].
+  Keep answers concise and include a short "Next step" section when relevant.
+user_template: |
+  Query: {{ query }}
+
+  Retrieved Context:
+  {{ contexts }}
+
+  Required Output Format:
+  1) Direct answer
+  2) Evidence bullets with citations
+  3) Confidence (high/medium/low)
+  4) Next step
+eval_scores:
+  sample_size: 200
+  judge_model: gpt-4o-mini
+  faithfulness: 0.847
+  answer_relevancy: 0.823
+  context_precision: 0.791
+  context_recall: 0.812
+  notes: "Baseline prompt used for production-style RAG QA."
+

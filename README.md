@@ -2,15 +2,13 @@
 
 # LLMOps Research Assistant
 
-### Production-architecture AI platform covering the full LLMOps lifecycle.
-
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![MLflow](https://img.shields.io/badge/MLflow-0194E2?style=for-the-badge&logo=mlflow&logoColor=white)](https://mlflow.org)
-[![AWS](https://img.shields.io/badge/AWS-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com)
-[![Azure](https://img.shields.io/badge/Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://azure.microsoft.com)
-
-*Not a wrapper. Not a tutorial. A production system built from raw components: distributed vector search, quantized fine-tuning, RLHF/PPO, multimodal generation, streaming inference, safety layers, and multi-cloud deployment.*
+> A production RAG + LLMOps stack for teams that need faster, cheaper, and auditable research answers in real deployment conditions.
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Coming_Soon-2ea44f?style=for-the-badge)](https://YOUR-LIVE-DEMO-URL)
+**Live Test Demo:** [Open App](https://YOUR-LIVE-DEMO-URL) | [API Health](https://YOUR-LIVE-DEMO-URL/health) | [Deployment Checklist](docs/live_demo_checklist.md)
+**Headline metric:** `3ms vector search · 0.847 RAGAS faithfulness · 250x cost reduction vs GPT-4o`
+<video src="assets/quick_demo.mp4" controls muted loop playsinline width="900"></video>
+*Place your demo video at `assets/quick_demo.mp4` (20-30s, query -> retrieval/rerank -> grounded answer). If GitHub video rendering is unavailable, add a fallback GIF at `assets/quick_demo.gif`. Deployment and recording checklist: `docs/live_demo_checklist.md`.*
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org) [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com) [![MLflow](https://img.shields.io/badge/MLflow-0194E2?style=for-the-badge&logo=mlflow&logoColor=white)](https://mlflow.org) [![AWS](https://img.shields.io/badge/AWS-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com) [![Azure](https://img.shields.io/badge/Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://azure.microsoft.com)
 
 <br>
 
@@ -132,6 +130,12 @@ Every component maps to a concrete business outcome.
 | Self-hosted quantized (int4-AWQ) | ~$0.02 | 350 ms | 250x cheaper; 1-3% quality tradeoff |
 
 The retrieval + reranking pipeline (the hard part) runs at under 50ms regardless of model choice. Switching the synthesis model from GPT-4o to a self-hosted quantized model reduces per-query cost by 250x with minimal quality impact for factual RAG tasks.
+
+---
+
+## Observability
+
+The multi-agent supervisor emits traces for each pipeline run, including routing decisions, per-agent latency/confidence, retries, circuit-breaker events, and HITL triggers; OpenTelemetry spans are always attempted and, when `LANGSMITH_API_KEY` is set, the same run is also captured in LangSmith under `LANGCHAIN_PROJECT` so prompt/pipeline regressions are debuggable from a single trace timeline.
 
 ---
 

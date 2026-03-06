@@ -4,6 +4,19 @@ This document maps common ML engineering job requirements to the specific files 
 
 ---
 
+## Live Demo Evidence (Resume-Critical)
+
+| Proof Item | Location | What to say in interview |
+|:---|:---|:---|
+| Public live demo URL | `README.md` (`Live Demo` badge at top) | I shipped a publicly accessible endpoint so reviewers can test the system without cloning the repo. |
+| Recorded product flow | `README.md` (`assets/quick_demo.mp4`) | I recorded a real request path: query -> retrieval/rerank -> grounded answer with citations. |
+| Deployment runbook | `docs/live_demo_checklist.md` | I documented exact steps to reproduce deployment and demo capture from a clean environment. |
+| Reproducible evaluation artifacts | `RESULTS.md`, `mlops/ragas_baseline.json`, `benchmarks/results.json` | I pair the live endpoint with reproducible quality and latency evidence rather than screenshots only. |
+
+> Replace the placeholder `Live Demo` URL in `README.md` with your deployed endpoint before sharing with recruiters.
+
+---
+
 ## Core ML Engineering
 
 | Requirement | File(s) | What to say |

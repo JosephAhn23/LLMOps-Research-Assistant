@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -99,6 +100,22 @@ def _try_otel_span(name: str, attributes: Dict[str, Any]):
         return nullcontext()
 
 
+def _maybe_langsmith_traceable(fn: Callable[..., "PipelineTrace"]) -> Callable[..., "PipelineTrace"]:
+    """
+    Conditionally wrap a callable with LangSmith tracing.
+
+    The wrapper is enabled only when LANGSMITH_API_KEY is set and the
+    `langsmith` package is installed. Otherwise it returns the original callable.
+    """
+    if not os.getenv("LANGSMITH_API_KEY"):
+        return fn
+    try:
+        from langsmith import traceable
+    except ImportError:
+        return fn
+    return traceable(name="multi_agent_supervisor_run", run_type="chain")(fn)
+
+
 class Supervisor:
     """
     Production multi-agent supervisor with full observability.
@@ -146,6 +163,11 @@ class Supervisor:
         self._hitl_queue: List[HITLRequest] = []
 
     def run(self, query: str, session_id: Optional[str] = None) -> PipelineTrace:
+        session_id = session_id or str(uuid.uuid4())[:12]
+        pipeline = _maybe_langsmith_traceable(self._run_pipeline)
+        return pipeline(query=query, session_id=session_id)
+
+    def _run_pipeline(self, query: str, session_id: str) -> PipelineTrace:
         session_id = session_id or str(uuid.uuid4())[:12]
         start = time.perf_counter()
         memory = WorkingMemory(session_id)
