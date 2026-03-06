@@ -281,8 +281,5 @@ tests/                117 tests: unit, integration, adversarial, multi-agent
 
 <div align="center">
 
-**Built by [Joseph Ahn](https://github.com/JosephAhn23)**
-
-[Resume Map](README.resume.md) | [Contributing](CONTRIBUTING.md)
-
+ 
 </div>
