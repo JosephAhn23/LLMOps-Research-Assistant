@@ -1,0 +1,11 @@
+# @package _global_.retrieval
+# FAISS single-node retrieval (default)
+
+backend: "faiss"
+index_path: "faiss_index/index.faiss"
+embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+top_k: 50                     # bi-encoder candidates before reranking
+rerank_top_k: 5               # final results after cross-encoder reranking
+similarity_threshold: 0.0
+batch_size: 32
+use_gpu: false

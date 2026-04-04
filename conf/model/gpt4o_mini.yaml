@@ -1,0 +1,4 @@
+name: gpt-4o-mini
+backend: openai
+max_tokens: 512
+temperature: 0.0

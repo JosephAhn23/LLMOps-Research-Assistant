@@ -1,0 +1,237 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llmops-research-assistant"
+version = "0.1.0"
+description = "Production-architecture LLMOps platform: RAG, fine-tuning, evaluation, and deployment"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Joseph Ahn", email = "josephahn63@gmail.com" }]
+keywords = ["llm", "rag", "mlops", "fine-tuning", "inference", "langchain", "langgraph"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# ── Core dependencies ──────────────────────────────────────────────────────────
+dependencies = [
+    # API
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "websockets>=12.0",
+    "pydantic>=2.7.0",
+
+    # LLM + embeddings
+    "openai>=1.30.0",
+    "tiktoken>=0.7.0",
+    "sentence-transformers>=3.0.0",
+    "transformers>=4.41.0",
+    "tokenizers>=0.19.0",
+
+    # RAG + retrieval
+    "faiss-cpu>=1.8.0",
+    "rank-bm25>=0.2.2",
+    "langchain>=0.2.0",
+    "langchain-core>=0.2.0",
+    "langchain-openai>=0.1.0",
+    "langgraph>=0.1.0",
+
+    # Evaluation
+    "ragas>=0.1.0",
+    "deepeval>=0.21.0",
+
+    # MLflow + experiment tracking
+    "mlflow>=2.13.0",
+
+    # Async task queue
+    "celery[redis]>=5.4.0",
+    "redis>=5.0.0",
+
+    # Data
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "umap-learn>=0.5.0",
+
+    # Cloud
+    "boto3>=1.34.0",
+
+    # Observability
+    "prometheus-client>=0.20.0",
+
+    # Config
+    "hydra-core>=1.3.0",
+    "omegaconf>=2.3.0",
+    "pyyaml>=6.0.0",
+
+    # Infra
+    "docker>=7.0.0",
+]
+
+# ── Optional dependency groups ─────────────────────────────────────────────────
+[project.optional-dependencies]
+
+# GPU inference
+gpu = [
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
+    "vllm>=0.4.0",
+    "accelerate>=0.30.0",
+    "bitsandbytes>=0.43.0",
+    "peft>=0.11.0",
+]
+
+# Local inference (llama.cpp)
+local = [
+    "llama-cpp-python>=0.2.70",
+    "gguf>=0.8.0",
+]
+
+# Spark / Databricks
+spark = [
+    "pyspark>=3.5.0",
+    "delta-spark>=3.1.0",
+]
+
+# Streaming
+streaming = [
+    "kafka-python>=2.0.2",
+    "aiokafka>=0.11.0",
+]
+
+# Azure
+azure = [
+    "azure-search-documents>=11.6.0",
+    "azure-core>=1.30.0",
+    "azure-identity>=1.16.0",
+]
+
+# Evaluation UI
+ui = [
+    "gradio>=4.36.0",
+    "websockets>=12.0",
+]
+
+# ONNX / inference optimization
+inference = [
+    "onnx>=1.16.0",
+    "onnxruntime-gpu>=1.18.0",
+]
+
+# Multimodal
+multimodal = [
+    "diffusers>=0.27.2",
+    "Pillow>=10.3.0",
+]
+
+# ML classifiers (adversarial, behavioral, interpretability probes)
+ml = [
+    "scikit-learn>=1.5.0",
+    "sentence-transformers>=3.0.0",
+]
+
+# RL environments
+rl = [
+    "gymnasium>=0.29.0",
+    "stable-baselines3>=2.3.0",
+]
+
+# Tokenization extras
+tokenization = [
+    "sentencepiece>=0.2.0",
+    "tokenizers>=0.19.0",
+]
+
+# Recommendation system (learn-to-rank, SHAP)
+recsys = [
+    "lightgbm>=4.3.0",
+    "shap>=0.45.0",
+    "scikit-learn>=1.5.0",
+]
+
+# Causal inference
+causal = [
+    "numpy>=1.26.0",
+]
+
+# Cross-model validation (OpenAI + Anthropic truth committee)
+truth_committee = [
+    "anthropic>=0.34.0",
+]
+
+# Dev tools
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pre-commit>=3.7.0",
+    "httpx>=0.27.0",
+]
+
+# All optional deps (for full dev environment)
+all = [
+    "llmops-research-assistant[gpu,local,spark,streaming,azure,ui,inference,multimodal,ml,rl,tokenization,recsys,causal,truth_committee,dev]",
+]
+
+# ── CLI entry points ───────────────────────────────────────────────────────────
+[project.scripts]
+llmops-serve    = "api.main:serve"
+llmops-eval     = "mlops.ragas_tracker:main"
+llmops-ingest   = "ingestion.pipeline:main"
+llmops-ui       = "eval.gradio_eval_ui:main"
+llmops-research-ui = "eval.research_ui:main"
+llmops-config   = "config.hydra_config:main"
+
+# ── Tool configuration ─────────────────────────────────────────────────────────
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "agents", "analysis", "api", "causal", "cicd", "compile", "config", "context_engineering",
+    "prompt_registry",
+    "cuda_ext", "eval", "experiments", "finetune", "governance", "inference", "ingestion", "interpretability",
+    "mcp_server", "microservices", "mlops", "monitoring",
+    "multimodal", "observability", "recsys", "rl", "safety",
+    "sandbox", "spark_ml", "streaming", "tokenization",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "PT"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict = false
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=. --cov-report=term-missing --cov-report=xml -v"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+omit = ["tests/*", "notebooks/*", "benchmarks/*", "conf/*", "outputs/*"]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "pre-commit>=3.7.0",
+    "httpx>=0.27.0",
+]

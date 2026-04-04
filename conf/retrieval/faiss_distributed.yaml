@@ -1,0 +1,14 @@
+# @package _global_.retrieval
+# Distributed FAISS (4 shards + aggregator)
+
+backend: "faiss_distributed"
+shard_urls:
+  - "http://shard-0:8001"
+  - "http://shard-1:8001"
+  - "http://shard-2:8001"
+  - "http://shard-3:8001"
+aggregator_url: "http://aggregator:8000"
+embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+top_k: 50
+rerank_top_k: 5
+timeout_seconds: 5.0

@@ -1,0 +1,106 @@
+# K8s deployment for distributed FAISS shards
+# Each shard is a separate pod with its own data volume
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: faiss-shard
+  namespace: llmops
+spec:
+  serviceName: faiss-shard
+  replicas: 4
+  selector:
+    matchLabels:
+      app: faiss-shard
+  template:
+    metadata:
+      labels:
+        app: faiss-shard
+    spec:
+      containers:
+        - name: shard
+          image: josephahn63/llmops-research-assistant:latest
+          command:
+            - uvicorn
+            - "infra.distributed_faiss_service:shard_app"
+            - "--host=0.0.0.0"
+            - "--port=8001"
+          env:
+            - name: SHARD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['apps.kubernetes.io/pod-index']
+          ports:
+            - containerPort: 8001
+          volumeMounts:
+            - name: shard-data
+              mountPath: /app/data/shards
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1000m"
+            limits:
+              memory: "8Gi"
+              cpu: "2000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 20
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: shard-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faiss-shard
+  namespace: llmops
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: faiss-shard
+  ports:
+    - port: 8001
+      targetPort: 8001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: faiss-aggregator
+  namespace: llmops
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: faiss-aggregator
+  template:
+    metadata:
+      labels:
+        app: faiss-aggregator
+    spec:
+      containers:
+        - name: aggregator
+          image: josephahn63/llmops-research-assistant:latest
+          command:
+            - uvicorn
+            - "infra.distributed_faiss_service:aggregator_app"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+          env:
+            - name: SHARD_URLS
+              value: "http://faiss-shard-0.faiss-shard:8001,http://faiss-shard-1.faiss-shard:8001,http://faiss-shard-2.faiss-shard:8001,http://faiss-shard-3.faiss-shard:8001"
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"

@@ -1,0 +1,39 @@
+services:
+  redis:
+    image: redis:7
+    ports:
+      - '6379:6379'
+
+  realtime-api:
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/api.Dockerfile
+    command: uvicorn api.realtime:app --host 0.0.0.0 --port 8000
+    env_file:
+      - ../.env
+    ports:
+      - '8000:8000'
+    depends_on:
+      - redis
+
+  batch-api:
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/api.Dockerfile
+    command: uvicorn api.batch:app --host 0.0.0.0 --port 8001
+    env_file:
+      - ../.env
+    ports:
+      - '8001:8001'
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/worker.Dockerfile
+    command: celery -A ingestion.batch_processor.celery_app worker --loglevel=INFO
+    env_file:
+      - ../.env
+    depends_on:
+      - redis

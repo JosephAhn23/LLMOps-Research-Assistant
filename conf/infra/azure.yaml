@@ -1,0 +1,5 @@
+environment: prod
+cloud: azure
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI}
+azure_subscription_id: ${oc.env:AZURE_SUBSCRIPTION_ID}
+azure_resource_group: ${oc.env:AZURE_RESOURCE_GROUP,llmops-rg}

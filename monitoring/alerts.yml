@@ -1,0 +1,57 @@
+groups:
+  - name: llmops-slo
+    rules:
+
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, rate(llmops_request_latency_seconds_bucket[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P99 latency > 10s"
+          description: "Endpoint {{ $labels.endpoint }} p99={{ $value | humanizeDuration }}"
+
+      - alert: HighErrorRate
+        expr: rate(llmops_errors_total[5m]) > 0.05
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Error rate > 5%"
+          description: "Error rate on {{ $labels.endpoint }}: {{ $value | humanize }}/s"
+
+      - alert: QualityRegression
+        expr: llmops_ragas_score{metric="faithfulness"} < 0.70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAGAS faithfulness below threshold (0.70)"
+          description: "Current faithfulness: {{ $value | humanize }}"
+
+      - alert: QueueDepthHigh
+        expr: llmops_queue_depth > 100
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue depth > 100"
+          description: "Queue {{ $labels.queue }}: {{ $value }} items"
+
+      - alert: GPUMemoryHigh
+        expr: llmops_gpu_memory_used_bytes / (1024 * 1024 * 1024) > 20
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory > 20 GB"
+          description: "Device {{ $labels.device }}: {{ $value | humanize }}GB used"
+
+      - alert: NDCGDrop
+        expr: llmops_ndcg{k="10"} < 0.60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NDCG@10 dropped below 0.60"
+          description: "Current NDCG@10: {{ $value | humanize }}"

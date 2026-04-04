@@ -1,0 +1,14 @@
+# @package _global_.model
+# Azure OpenAI backend
+
+name: "gpt-4o-mini"
+provider: "azure"
+max_tokens: 1024
+temperature: 0.2
+top_p: 1.0
+stream: false
+
+azure_endpoint: "${oc.env:AZURE_OPENAI_ENDPOINT,}"
+azure_api_key: "${oc.env:AZURE_OPENAI_KEY,}"
+azure_deployment: "${oc.env:AZURE_OPENAI_DEPLOYMENT,gpt-4o-mini}"
+azure_api_version: "2024-08-01-preview"

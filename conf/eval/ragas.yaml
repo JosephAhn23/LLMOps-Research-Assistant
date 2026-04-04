@@ -1,0 +1,5 @@
+frameworks:
+- ragas
+faithfulness_min: 0.7
+relevancy_min: 0.7
+regression_threshold: 0.05

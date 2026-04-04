@@ -1,0 +1,6 @@
+method: qlora
+lora_r: 16
+lora_alpha: 32
+load_in_4bit: true
+num_epochs: 3
+learning_rate: 0.0002

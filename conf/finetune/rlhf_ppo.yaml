@@ -1,0 +1,20 @@
+# @package _global_.finetune
+# RLHF PPO fine-tuning
+
+method: "rlhf_ppo"
+base_model: "meta-llama/Llama-3.2-1B-Instruct"
+reward_model: "OpenAssistant/reward-model-deberta-v3-large-v2"
+output_dir: "${paths.model_dir}/rlhf"
+
+learning_rate: 1.41e-5
+batch_size: 8
+mini_batch_size: 4
+ppo_epochs: 4
+max_steps: 200
+kl_penalty: "kl"
+target_kl: 6.0
+init_kl_coef: 0.2
+clip_range: 0.2
+vf_coef: 0.1
+max_new_tokens: 128
+temperature: 1.0

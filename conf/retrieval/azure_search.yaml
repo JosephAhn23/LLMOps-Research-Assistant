@@ -1,0 +1,4 @@
+backend: azure_search
+top_k: 10
+rerank: true
+azure_search_index: llmops-docs

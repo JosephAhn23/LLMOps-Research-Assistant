@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: faiss-shard
+  namespace: llmops
+spec:
+  serviceName: faiss-shard
+  replicas: 4
+  selector:
+    matchLabels:
+      app: faiss-shard
+  template:
+    metadata:
+      labels:
+        app: faiss-shard
+    spec:
+      containers:
+        - name: shard
+          image: llmops-research-assistant:latest
+          command: ["python", "-m", "infra.shard_server"]
+          env:
+            - name: SHARD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['shard-id']
+            - name: SHARD_PATH
+              value: "/data/shard.index"
+            - name: META_PATH
+              value: "/data/shard_meta.json"
+          ports:
+            - containerPort: 8001
+          volumeMounts:
+            - name: shard-data
+              mountPath: /data
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+  volumeClaimTemplates:
+    - metadata:
+        name: shard-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: "10Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faiss-shard
+  namespace: llmops
+spec:
+  clusterIP: None
+  selector:
+    app: faiss-shard
+  ports:
+    - port: 8001
+      targetPort: 8001

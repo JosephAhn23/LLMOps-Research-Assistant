@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llmops-worker
+  namespace: llmops
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: llmops-worker
+  template:
+    metadata:
+      labels:
+        app: llmops-worker
+    spec:
+      containers:
+        - name: worker
+          image: josephahn63/llmops-research-assistant:latest
+          command: ["celery", "-A", "api.batch.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+          envFrom:
+            - configMapRef:
+                name: llmops-config
+            - secretRef:
+                name: llmops-secrets
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"

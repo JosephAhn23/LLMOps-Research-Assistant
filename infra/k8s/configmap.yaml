@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llmops-config
+  namespace: llmops
+data:
+  MLFLOW_TRACKING_URI: "http://mlflow-service:5000"
+  REDIS_URL: "redis://redis-service:6379/0"
+  AWS_DEFAULT_REGION: "us-east-1"
+  LOG_LEVEL: "INFO"

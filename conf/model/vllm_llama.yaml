@@ -1,0 +1,15 @@
+# @package _global_.model
+# vLLM self-hosted Llama backend
+
+name: "meta-llama/Llama-3.1-8B-Instruct"
+provider: "vllm"
+max_tokens: 2048
+temperature: 0.2
+top_p: 0.95
+stream: true
+
+vllm_host: "${oc.env:VLLM_HOST,localhost}"
+vllm_port: 8080
+tensor_parallel_size: 1
+gpu_memory_utilization: 0.90
+quantization: null             # null | awq | gptq | squeezellm

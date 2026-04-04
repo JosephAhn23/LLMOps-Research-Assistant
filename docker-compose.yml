@@ -1,0 +1,93 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - SHARD_AGGREGATOR_URL=http://aggregator:8000
+    depends_on: [redis]
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      retries: 3
+
+  worker-default:
+    build: .
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on: [redis]
+    command: celery -A api.batch.celery_app worker -Q default --loglevel=info --concurrency=4
+
+  worker-priority:
+    build: .
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on: [redis]
+    command: celery -A api.batch.celery_app worker -Q high_priority --loglevel=info --concurrency=8
+
+  worker-dlq:
+    build: .
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on: [redis]
+    command: celery -A api.batch.celery_app worker -Q dead_letter --loglevel=warning --concurrency=1
+
+  flower:
+    image: mher/flower:2.0
+    ports: ["5555:5555"]
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_BASIC_AUTH=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:?FLOWER_PASSWORD is required}
+    depends_on: [redis]
+    command: >
+      celery flower
+      --broker=redis://redis:6379/0
+      --port=5555
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD}
+
+  shard-0:
+    build: .
+    environment: [SHARD_ID=0]
+    ports: ["8001:8001"]
+    command: uvicorn infra.distributed_faiss_service:shard_app --host 0.0.0.0 --port 8001
+
+  shard-1:
+    build: .
+    environment: [SHARD_ID=1]
+    ports: ["8002:8001"]
+    command: uvicorn infra.distributed_faiss_service:shard_app --host 0.0.0.0 --port 8001
+
+  shard-2:
+    build: .
+    environment: [SHARD_ID=2]
+    ports: ["8003:8001"]
+    command: uvicorn infra.distributed_faiss_service:shard_app --host 0.0.0.0 --port 8001
+
+  shard-3:
+    build: .
+    environment: [SHARD_ID=3]
+    ports: ["8004:8001"]
+    command: uvicorn infra.distributed_faiss_service:shard_app --host 0.0.0.0 --port 8001
+
+  aggregator:
+    build: .
+    ports: ["8005:8000"]
+    environment:
+      - SHARD_URLS=http://shard-0:8001,http://shard-1:8001,http://shard-2:8001,http://shard-3:8001
+    depends_on: [shard-0, shard-1, shard-2, shard-3]
+    command: uvicorn infra.distributed_faiss_service:aggregator_app --host 0.0.0.0 --port 8000
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.10.0
+    ports: ["5000:5000"]
+    command: mlflow server --host 0.0.0.0 --port 5000

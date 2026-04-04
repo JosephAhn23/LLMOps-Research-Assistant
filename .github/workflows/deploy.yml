@@ -1,0 +1,56 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/llmops:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/llmops:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/llmops:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Kubernetes
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+        run: |
+          kubectl set image deployment/llmops-api \
+            api=${{ steps.login-ecr.outputs.registry }}/llmops:${{ github.sha }} \
+            -n llmops
+          kubectl rollout status deployment/llmops-api -n llmops --timeout=300s
+
+      - name: Trigger SageMaker retraining (weekly)
+        if: github.event_name == 'schedule'
+        run: |
+          python infra/sagemaker_pipeline.py --trigger-execution
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          aws sns publish \
+            --topic-arn ${{ secrets.SNS_TOPIC_ARN }} \
+            --message "Deploy failed: ${{ github.sha }}"

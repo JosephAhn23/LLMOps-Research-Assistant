@@ -1,0 +1,3 @@
+name: baseline
+description: Full pipeline with hybrid retrieval and reranking
+seed: 42
